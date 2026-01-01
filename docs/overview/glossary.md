@@ -170,7 +170,7 @@ The number of votes a user can cast, equal to their staked vote token balance.
 A pool must be whitelisted by the Controller to distribute LP rewards. Requires governance vote and veto holder approval.
 
 ### WVC
-Wrapped VinuCoin - The wrapped version of VinuChain's native token (VC).
+Wrapped VinuChain - The wrapped version of VinuChain's native token (VC).
 
 ## Z
 
