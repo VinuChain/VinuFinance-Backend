@@ -7,8 +7,8 @@ This guide covers VinuFinance deployment specifics for VinuChain.
 | Property | Value |
 |----------|-------|
 | Chain ID | 207 |
-| Native Token | VC (VinuCoin) |
-| Wrapped Native | WVC (Wrapped VinuCoin) |
+| Native Token | VC (VinuChain) |
+| Wrapped Native | WVC (Wrapped VinuChain) |
 | Block Time | ~3 seconds |
 | Consensus | Proof of Stake (PoS) |
 

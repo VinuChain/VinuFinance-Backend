@@ -67,7 +67,7 @@ VinuFinance is a peer-to-pool lending protocol that allows:
 
 VinuFinance is deployed on **VinuChain** (Chain ID: 207) and uses:
 
-* **WVC** (Wrapped VinuCoin) as the native wrapped token
+* **WVC** (Wrapped VinuChain) as the native wrapped token
 * **USDT** as the primary stablecoin for loan pools
 * **VINU** governance token for voting and rewards
 
