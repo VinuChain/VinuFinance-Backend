@@ -211,13 +211,18 @@ pool.repay(yourLoanIdx, yourAddress);
 
 ## Interest Rate Dynamics
 
-Interest rates change based on pool utilization:
+The borrow rate is driven by the pool's **available liquidity**
+(`totalLiquidity − minLiquidity`), not a utilization percentage. As available
+liquidity falls, the rate rises:
 
-| Utilization | Rate Behavior |
-|-------------|---------------|
-| 0-25% | Low rates, more borrower-friendly |
-| 25-90% | Rates increase linearly |
-| 90-100% | Rates increase rapidly |
+| Available liquidity | Rate behavior |
+|---------------------|---------------|
+| Above `liquidityBnd2` | Flat at the minimum rate `r2` |
+| Between `liquidityBnd1` and `liquidityBnd2` | Linear, rising from `r2` toward `r1` as liquidity drops |
+| Below `liquidityBnd1` | Hyperbolic, above `r1` (`r1 × liquidityBnd1 / liquidity`) |
+
+The repayment uses the **average** rate across pre- and post-borrow liquidity.
+See [Interest Rates](../overview/interest-rates.md) for the exact formula.
 
 **Check current rates before borrowing:**
 ```javascript

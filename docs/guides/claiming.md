@@ -137,17 +137,40 @@ Set `_isReinvested = true` to automatically reinvest repayments:
 
 ## Batch Claiming with MultiClaim
 
-For claiming from multiple pools efficiently, use the MultiClaim helper:
+`BasePool.claim` requires every loan index in a single call to fall within one
+**constant-share interval** — if your LP share balance changed partway through
+(e.g. you added or removed liquidity), a call spanning that change reverts with
+`"Loan indexes with changing shares."`. MultiClaim batches one `claim` per segment
+in a single transaction:
 
 ```solidity
-// Claim from multiple pools in one transaction
-multiClaim.claimPools(poolAddresses);
+function claimMultiple(
+    IBasePool _pool,
+    uint256[][] calldata _loanIdxs,   // one ascending sub-array per constant-share segment
+    bool[] calldata _isReinvested,    // reinvest flag per segment
+    uint256 _deadline
+) external;
 ```
 
-This automatically:
-1. Identifies all claimable loans in each pool
-2. Executes claims in a single transaction
-3. Saves gas compared to individual claims
+```javascript
+// e.g. your shares changed after loan 5: claim 1–5, then 6–12, in one tx
+await multiClaim.claimMultiple(
+    poolAddress,
+    [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10, 11, 12]],
+    [true, false],
+    Math.floor(Date.now() / 1000) + 3600
+);
+```
+
+> **Cursor warning — don't skip loans you're entitled to.** Each `claim` advances your
+> `fromLoanIdx` cursor to the highest submitted index + 1. If you leave a gap over loans
+> you still hold shares in (e.g. they haven't settled yet), the cursor moves past them and
+> they become **permanently unclaimable** (a later claim reverts `"Unentitled from loan
+> indices."`). Gaps are only safe across spans where you held **no** shares — the pool
+> skips those automatically.
+
+First approve MultiClaim on the pool for CLAIM (and ADD_LIQUIDITY if reinvesting):
+`pool.setApprovals(multiClaimAddress, 10)` (CLAIM=8 + ADD_LIQUIDITY=2).
 
 See [MultiClaim Reference](../reference/contracts/multi-claim.md) for details.
 

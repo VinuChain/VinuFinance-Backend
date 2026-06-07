@@ -9,3 +9,7 @@ data
 #Hardhat files
 cache
 artifacts
+
+# Local agent/session state (oh-my-claudecode) — never commit
+.omc/
+.claude/

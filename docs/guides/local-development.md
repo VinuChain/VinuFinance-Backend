@@ -13,7 +13,7 @@ This guide explains how to set up a local development environment for VinuFinanc
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/VinuFinance/VinuFinance-VinuChain.git
+git clone https://github.com/VinuChain/VinuFinance-VinuChain.git
 cd VinuFinance-VinuChain
 ```
 
@@ -172,7 +172,7 @@ describe("BasePool", function () {
         it("should revert with zero amount", async function () {
             await expect(
                 basePool.addLiquidity(lp.address, 0, deadline, 0)
-            ).to.be.revertedWith("Invalid send amount.");
+            ).to.be.revertedWith("Invalid add amount.");
         });
     });
 });

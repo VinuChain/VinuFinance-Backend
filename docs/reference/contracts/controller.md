@@ -122,7 +122,7 @@ Creates a new governance proposal.
 // Create proposal to whitelist a pool
 await controller.createProposal(
     poolAddress,
-    1, // Action.WHITELIST
+    2, // Action.WHITELIST (enum: PAUSE=0, UNPAUSE=1, WHITELIST=2, DEWHITELIST=3)
     Math.floor(Date.now() / 1000) + 7 * 24 * 3600 // 7 days
 );
 ```

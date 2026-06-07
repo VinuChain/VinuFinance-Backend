@@ -127,9 +127,9 @@ const pool = await BasePool.deploy(
     18,                              // WVC has 18 decimals
     2592000,                         // 30 days in seconds
     ethers.utils.parseUnits("0.5", 18), // 0.5 loan per coll
-    [                                // Interest rates array
-        ethers.utils.parseUnits("0.02", 18), // 2% r1
-        ethers.utils.parseUnits("0.15", 18)  // 15% r2
+    [                                // Interest rates array (r1 > r2 required)
+        ethers.utils.parseUnits("0.15", 18), // r1 = 15% (rate at low available liquidity)
+        ethers.utils.parseUnits("0.02", 18)  // r2 = 2%  (minimum rate)
     ],
     [                                // Liquidity bounds array
         ethers.utils.parseUnits("10000", 6),  // 10k USDT bnd1

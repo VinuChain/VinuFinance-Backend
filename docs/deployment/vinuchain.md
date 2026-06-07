@@ -96,9 +96,9 @@ async function main() {
         18,                                   // _collTokenDecimals
         2592000,                             // _loanTenor (30 days)
         ethers.utils.parseUnits("0.5", 18),  // _maxLoanPerColl
-        [                                    // _rs array
-            ethers.utils.parseUnits("0.02", 18), // r1 = 2%
-            ethers.utils.parseUnits("0.15", 18)  // r2 = 15%
+        [                                    // _rs array — r1 > r2 required (r1 = rate at low liquidity, r2 = min rate)
+            ethers.utils.parseUnits("0.15", 18), // r1 = 15% (rate at low available liquidity)
+            ethers.utils.parseUnits("0.02", 18)  // r2 = 2%  (minimum rate)
         ],
         [                                    // _liquidityBnds array
             ethers.utils.parseUnits("10000", 6), // 10k USDT bnd1
@@ -195,7 +195,7 @@ module.exports = [
     18,                                         // _collTokenDecimals
     2592000,                                   // _loanTenor
     "500000000000000000",                      // _maxLoanPerColl
-    ["20000000000000000", "150000000000000000"], // _rs array [r1, r2]
+    ["150000000000000000", "20000000000000000"], // _rs array [r1, r2] = [15%, 2%] (r1 > r2)
     ["10000000000", "100000000000"],           // _liquidityBnds array
     "100000000",                               // _minLoan
     "10000000000000000",                       // _creatorFee
@@ -244,8 +244,8 @@ VinuChain has low gas costs:
 {
     loanTenor: 2592000,        // 30 days
     maxLoanPerColl: 0.3,       // 30% LTV
-    r1: 0.02,                  // 2% base rate
-    r2: 0.12,                  // 12% max rate
+    r1: 0.12,                  // 12% rate at low available liquidity (must exceed r2)
+    r2: 0.02,                  // 2% minimum rate
     liquidityBnd1: 50000,      // 50k USDT
     liquidityBnd2: 200000,     // 200k USDT
     minLoan: 100,              // 100 USDT
@@ -259,8 +259,8 @@ VinuChain has low gas costs:
 {
     loanTenor: 604800,         // 7 days
     maxLoanPerColl: 0.6,       // 60% LTV
-    r1: 0.05,                  // 5% base rate
-    r2: 0.25,                  // 25% max rate
+    r1: 0.25,                  // 25% rate at low available liquidity (must exceed r2)
+    r2: 0.05,                  // 5% minimum rate
     liquidityBnd1: 10000,      // 10k USDT
     liquidityBnd2: 50000,      // 50k USDT
     minLoan: 50,               // 50 USDT

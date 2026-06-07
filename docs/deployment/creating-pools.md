@@ -75,28 +75,27 @@ const maxLoanPerColl = collateralPrice * desiredLTV; // 1.0
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `r1` | uint256 | Rate at 0% utilization |
-| `r2` | uint256 | Rate at 100% utilization |
+| `r1` | uint256 | Rate at low available liquidity (start of target range) — the **higher** rate; must be > r2 |
+| `r2` | uint256 | Minimum rate at high available liquidity (end of target range); must be > 0 |
 | `liquidityBnd1` | uint256 | First boundary (start of linear region) |
 | `liquidityBnd2` | uint256 | Second boundary (end of linear region) |
 
 #### Interest Rate Model
 
 ```
-Rate at 0% util ────────────────► r1
-                                   │
-                                   │ Hyperbolic decrease
-                                   │
-Rate at bnd1/total ◄───────────────┤
-                                   │
-                                   │ Linear increase
-                                   │
-Rate at bnd2/total ◄───────────────┤
-                                   │
-                                   │ Constant
-                                   │
-Rate at 100% util ────────────────► r2
+rate
+ ▲
+ │\                       liquidity < bnd1 : hyperbolic, r = r1 × bnd1 / liquidity  (≥ r1)
+ │ \
+r1┤  \____                bnd1 ≤ liquidity ≤ bnd2 : linear, r1 down to r2
+ │      \____
+r2┤          \__________  liquidity > bnd2 : flat at r2 (minimum rate)
+ │
+ └────┬─────┬───────────► available liquidity (totalLiquidity − minLiquidity)
+     bnd1  bnd2
 ```
+Lower available liquidity ⇒ higher rate. r1 (the higher rate) applies at the
+scarce-liquidity end; r2 (the minimum) applies when liquidity is abundant.
 
 #### Example Configuration
 
@@ -105,19 +104,19 @@ For a pool with moderate risk tolerance:
 ```javascript
 const BASE = ethers.utils.parseUnits("1", 18);
 
-// Interest rates (annualized, in BASE)
-const r1 = BASE.mul(2).div(100);   // 2% at low utilization
-const r2 = BASE.mul(15).div(100);  // 15% at high utilization
+// Interest rates — per loan tenor (NOT annualized), denominated in BASE
+const r1 = BASE.mul(15).div(100);  // 15% — rate at low available liquidity (must exceed r2)
+const r2 = BASE.mul(2).div(100);   // 2%  — minimum rate at abundant liquidity
 
 // Liquidity boundaries (in loan token units)
 const liquidityBnd1 = ethers.utils.parseUnits("10000", 6);  // 10k USDT
 const liquidityBnd2 = ethers.utils.parseUnits("100000", 6); // 100k USDT
 ```
 
-**Rate behavior:**
-- 0-10k liquidity: Rates decrease hyperbolically from r2 toward linear region
-- 10k-100k liquidity: Rates increase linearly
-- 100k+ liquidity: Rates stay constant at r2
+**Rate behavior** (available liquidity = totalLiquidity − minLiquidity):
+- Below 10k: rate rises hyperbolically above r1 as liquidity falls (`r1 × bnd1 / liquidity`)
+- 10k–100k: rate interpolates linearly between r1 (at 10k) and r2 (at 100k)
+- Above 100k: rate stays constant at the minimum, r2
 
 ### Fee Parameters
 
@@ -177,8 +176,8 @@ const config = {
 
     // Interest rates (passed as array)
     rs: [
-        ethers.utils.parseUnits("0.02", 18),  // r1 = 2%
-        ethers.utils.parseUnits("0.15", 18)   // r2 = 15%
+        ethers.utils.parseUnits("0.15", 18),  // r1 = 15% (rate at low liquidity; must exceed r2)
+        ethers.utils.parseUnits("0.02", 18)   // r2 = 2%  (minimum rate)
     ],
     liquidityBnds: [
         ethers.utils.parseUnits("10000", 6),   // 10k USDT bnd1
@@ -232,8 +231,8 @@ Low risk, lower returns:
 {
     loanTenor: 2592000,          // 30 days
     maxLoanPerColl: 0.3,         // 30% effective LTV
-    r1: 0.01,                    // 1%
-    r2: 0.08,                    // 8%
+    r1: 0.08,                    // 8% (rate at low liquidity; must exceed r2)
+    r2: 0.01,                    // 1% (minimum rate)
     liquidityBnd1: 100000,       // 100k
     liquidityBnd2: 500000,       // 500k
     minLoan: 1000,               // 1000 USDT
@@ -249,8 +248,8 @@ Balanced risk/reward:
 {
     loanTenor: 2592000,          // 30 days
     maxLoanPerColl: 0.5,         // 50% effective LTV
-    r1: 0.02,                    // 2%
-    r2: 0.15,                    // 15%
+    r1: 0.15,                    // 15% (rate at low liquidity; must exceed r2)
+    r2: 0.02,                    // 2% (minimum rate)
     liquidityBnd1: 10000,        // 10k
     liquidityBnd2: 100000,       // 100k
     minLoan: 100,                // 100 USDT
@@ -266,8 +265,8 @@ Higher risk, higher returns:
 {
     loanTenor: 604800,           // 7 days
     maxLoanPerColl: 0.7,         // 70% effective LTV
-    r1: 0.05,                    // 5%
-    r2: 0.30,                    // 30%
+    r1: 0.30,                    // 30% (rate at low liquidity; must exceed r2)
+    r2: 0.05,                    // 5% (minimum rate)
     liquidityBnd1: 5000,         // 5k
     liquidityBnd2: 25000,        // 25k
     minLoan: 50,                 // 50 USDT
@@ -282,9 +281,12 @@ Higher risk, higher returns:
 The contract validates:
 
 ```solidity
-require(_loanTenor >= MIN_TENOR, "Loan tenor too small.");
-require(_liquidityBnd2 > _liquidityBnd1, "Invalid liquidity bounds.");
-require(_creatorFee <= MAX_CREATOR_FEE, "Creator fee too high.");
+require(_loanTenor >= MIN_TENOR, "Loam tenor must be at least MIN_TENOR.");
+// rate params: r1 must be strictly greater than r2, and r2 must be non-zero
+if (_rs[0] <= _rs[1] || _rs[1] == 0) revert("Invalid rate parameters.");
+if (_liquidityBnds[1] <= _liquidityBnds[0] || _liquidityBnds[0] == 0) revert("Invalid liquidity bounds");
+require(_minLiquidity >= 1000, "Min liquidity must be at least 1000.");
+require(_creatorFee <= MAX_FEE, "Creator fee too high.");
 ```
 
 ### Manual Verification
@@ -345,19 +347,22 @@ const pool30d = await deployPool({
     loanTenor: 2592000
 });
 
-// Deploy USDT/WVC 7-day pool
+// Deploy USDT/WVC 7-day pool (override rates — the helper reads config.rs)
 const pool7d = await deployPool({
     ...baseConfig,
     loanTenor: 604800,
-    r1: ethers.utils.parseUnits("0.03", 18),
-    r2: ethers.utils.parseUnits("0.20", 18)
+    rs: [
+        ethers.utils.parseUnits("0.20", 18),  // r1 (must exceed r2)
+        ethers.utils.parseUnits("0.03", 18)   // r2
+    ]
 });
 
-// Deploy USDT/WBTC pool
+// Deploy USDT/WBTC pool (override the collateral token and its decimals)
 const poolBTC = await deployPool({
     ...baseConfig,
-    collToken: wbtcAddress,
-    maxLoanPerColl: ethers.utils.parseUnits("30000", 18)  // Higher for BTC
+    tokens: [usdtAddress, wbtcAddress],   // [loanCcyToken, collCcyToken]
+    collTokenDecimals: 8,                 // WBTC has 8 decimals
+    maxLoanPerColl: ethers.utils.parseUnits("30000", 18)  // higher loan per BTC unit
 });
 ```
 

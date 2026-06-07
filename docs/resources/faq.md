@@ -147,9 +147,9 @@ Check the official VinuFinance website for the current UI. You can also interact
 
 ## Troubleshooting
 
-### "Invalid send amount"
+### "Invalid add amount"
 
-The amount you're sending is zero or exceeds limits. Check:
+The deposit is below the pool minimum (`minLiquidity / 1000`) or otherwise invalid. Check:
 - Amount is greater than zero
 - Amount doesn't exceed your balance
 - Amount meets pool minimum requirements
