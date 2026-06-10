@@ -1,0 +1,28 @@
+# Foundry config — used ONLY for the security invariant/property test harness
+# added during the audit remediation. The canonical build/test toolchain remains
+# Hardhat (see package.json, hardhat.config.ts). These tests do NOT touch deployed
+# contract semantics; they import the production contracts unmodified.
+[profile.default]
+src = "contracts"
+test = "test/foundry"
+out = "out"
+libs = ["lib", "node_modules"]
+solc = "0.8.19"
+optimizer = true
+optimizer_runs = 200
+# Only compile/test the Foundry harness; ignore the Hardhat TS tests.
+[profile.default.fuzz]
+runs = 256
+[profile.default.invariant]
+runs = 256
+depth = 50
+fail_on_revert = false
+
+[fmt]
+line_length = 120
+
+# Map the imports used by the production contracts to node_modules (OZ is installed there).
+remappings = [
+    "@openzeppelin/=node_modules/@openzeppelin/",
+    "forge-std/=lib/forge-std/src/",
+]

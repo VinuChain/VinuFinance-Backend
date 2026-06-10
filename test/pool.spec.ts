@@ -56,7 +56,13 @@ const UNPAUSE_THRESHOLD = 3000 // 30%
 const WHITELIST_THRESHOLD = 8000 // 80%
 const DEWHITELIST_THRESHOLD = 7000 // 70%
 const CONTROLLER_LOCK_PERIOD = 10
-const REWARD_COEFFICIENT = '0'
+// Reward coefficient for the core suite. Defaults to '0' (the historical value
+// the inherited MYSO core suite was written against; see audit finding T1).
+// Override via REWARD_COEFFICIENT env var to exercise the whole share-array
+// edge-case suite under live rewards, e.g. REWARD_COEFFICIENT=1000000000000000
+// (1e15). The suite's own equality assertions reference this same constant, so a
+// non-zero value re-runs every scenario with the reward bookkeeping fully active.
+const REWARD_COEFFICIENT = process.env.REWARD_COEFFICIENT ?? '0'
 
 const Actions = {
     Pause : 0,

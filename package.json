@@ -1,9 +1,9 @@
 {
   "name": "vinu-finance-vinuchain",
   "version": "1.0.0",
-  "description": "Zero-Liquidation Lending Protocol for Vite",
+  "description": "Zero-Liquidation Lending Protocol for VinuChain (port of MYSO v1 core)",
   "main": "index.js",
-  "repository": "https://github.com/mysofinance/v1-core-protocol",
+  "repository": "https://github.com/VinuChain/VinuFinance-Backend",
   "author": "Samuele Marro <marrosamuele@gmail.com>",
   "license": "MIT",
   "dependencies": {
@@ -42,6 +42,8 @@
   "scripts": {
     "test_legacy": "./node_modules/.bin/mocha --full-trace --config ./test/mocharc.nightly.json",
     "preprocess" : "npx ts-node scripts/preprocess_for_tests.ts",
-    "test": "TS_NODE_FILES=true && npm run preprocess && npx hardhat test"
+    "test": "TS_NODE_FILES=true && npm run preprocess && npx hardhat test",
+    "coverage": "TS_NODE_FILES=true && npm run preprocess && npx hardhat coverage",
+    "test:foundry": "forge test --match-path \"test/foundry/*.t.sol\" -vv"
   }
 }

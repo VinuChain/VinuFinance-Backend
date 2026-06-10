@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Compile + the inherited MYSO core / delta suite (Hardhat).
+  # The matrix runs the suite twice: at the historical zero reward coefficient,
+  # and at a realistic non-zero coefficient (audit finding T1).
+  #
+  # SCOPE of the non-zero leg: it makes the dangerous `lastTrackedLiquidity`
+  # bookkeeping (the S1 subtraction at BasePool.sol:252/:437) execute across every
+  # share-array edge case. It does NOT make most reward *amounts* live, because
+  # those tests use the real Controller without whitelisting/funding the pool and
+  # BasePool swallows the resulting `requestTokenDistribution` revert (try/catch).
+  # Live reward-amount accounting is covered by the dedicated `reward requests`
+  # block in pool.spec.ts and by the Foundry harness (which uses a non-reverting
+  # reward mock). Both legs must stay green.
+  hardhat:
+    name: hardhat-tests (REWARD_COEFFICIENT=${{ matrix.reward_coefficient }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        reward_coefficient: ["0", "1000000000000000"] # 0 and 1e15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Compile + run test suite
+        env:
+          REWARD_COEFFICIENT: ${{ matrix.reward_coefficient }}
+        run: npm test
+
+  # Security invariant / property tests for the reward bookkeeping (Foundry).
+  # forge-std is installed explicitly here (it is gitignored, not vendored) so
+  # the harness is reproducible on a clean runner.
+  foundry:
+    name: foundry-reward-invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      # The Foundry harness imports @openzeppelin from node_modules.
+      - name: Install node dependencies (for OpenZeppelin remapping)
+        run: yarn install --frozen-lockfile
+
+      - name: Install forge-std
+        run: forge install --no-git foundry-rs/forge-std
+
+      - name: Run reward invariant / property tests
+        run: forge test --match-path "test/foundry/*.t.sol" -vv
