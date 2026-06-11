@@ -124,30 +124,28 @@ contract RewardInvariantTest is Test {
     }
 
     /**
-     * @notice CORE S1 INVARIANT — KNOWN FALSIFIED (audit finding S1).
+     * @notice CORE S1 INVARIANT — NOW A LIVE GUARD (audit task P2 fix landed).
      *
      * The intended property is: neither removeLiquidity nor claim may ever revert
      * due to a reward-arithmetic underflow (lastTrackedLiquidity decrement
-     * exceeding the stored value). THIS INVARIANT DOES NOT HOLD.
+     * exceeding the stored value).
      *
-     * The falsification is proven deterministically and reproducibly by:
-     *   - test_S1_falsified_deterministic_replay()  (this file)
-     *   - RewardUnderflowReproTest                  (RewardUnderflowRepro.t.sol)
-     * both of which PASS and assert the real on-chain Panic(0x11) revert.
+     * Originally FALSIFIED (audit finding S1): the principal-credited tracker drifts
+     * below the share-value-derived decrement, so the Solidity-0.8 checked
+     * subtraction at BasePool.sol:252 reverted with Panic(0x11), locking the LP.
+     * The saturating-subtraction fix (audit task P2) now floors the new tracked
+     * liquidity at 0 instead of reverting, at BasePool.sol:252 and :437.
      *
-     * This invariant is therefore SKIPPED so it does not red CI: keeping it as a
-     * red test would obscure new regressions, while the two passing tests above
-     * pin the falsified behavior. RE-ENABLE this invariant (delete the vm.skip)
-     * once the saturating-subtraction fix (audit task P2) lands at BasePool.sol:252
-     * and :437 - at that point it must pass and becomes a genuine guard.
+     * This invariant is therefore RE-ENABLED (vm.skip removed) and is now a genuine
+     * regression guard: with the fix, removeLiquidity never reverts at the reward
+     * site, so removeActualRevertSeen must stay false across the fuzz campaign.
      *
-     * Crucially, this asserts the ACTUAL on-chain revert (removeActualRevertSeen,
-     * set only when removeLiquidity really reverted with Panic(0x11) at the reward
-     * site), NOT the mere arithmetic precondition. A saturating fix makes the call
-     * succeed -> the flag stays false -> deleting vm.skip yields a passing guard.
+     * It asserts the ACTUAL on-chain revert (removeActualRevertSeen, set only when
+     * removeLiquidity really reverted with Panic(0x11) at the reward site), NOT the
+     * mere arithmetic precondition — the saturating fix makes the call succeed, so
+     * the flag stays false and the guard passes.
      */
-    function invariant_exitNeverRevertsFromRewardUnderflow() public {
-        vm.skip(true);
+    function invariant_exitNeverRevertsFromRewardUnderflow() public view {
         assertFalse(
             handler.removeActualRevertSeen(),
             string.concat("S1 reward underflow (actual revert): ", handler.rewardUnderflowContext())
@@ -178,12 +176,16 @@ contract RewardInvariantTest is Test {
 
     /**
      * @notice DETERMINISTIC replay of the minimal counterexample the invariant
-     *         fuzzer shrank to (seed 1). Drives the handler through the exact
-     *         add/add/warp/remove/add/remove sequence and asserts removeLiquidity
-     *         ACTUALLY reverted with Panic(0x11) at BasePool.sol:252. Self-contained
-     *         proof that S1 is FALSIFIED, independent of the fuzzer's RNG.
+     *         fuzzer originally shrank to (seed 1). Drives the handler through the
+     *         exact add/add/warp/remove/add/remove sequence that FALSIFIED S1
+     *         pre-fix. With the saturating-subtraction fix (audit task P2) at
+     *         BasePool.sol:252, removeLiquidity must now succeed (no Panic(0x11)),
+     *         even though the underflow PRECONDITION is still reached
+     *         (liquidityRemoved > lastTrackedLiquidity) — the fix floors at 0 rather
+     *         than reverting. Self-contained proof that S1 is FIXED on the remove
+     *         path, independent of the fuzzer's RNG.
      */
-    function test_S1_falsified_deterministic_replay() public {
+    function test_S1_fixed_deterministic_replay() public {
         handler.addLiquidity(3534, 2);
         handler.addLiquidity(8345, 31);
         handler.warp(30109035684);
@@ -191,16 +193,29 @@ contract RewardInvariantTest is Test {
         handler.addLiquidity(
             101617175471035115835688569010101867805699620471168094044354915832100953916851, 6338
         );
+        uint256 removesBefore = handler.successfulRemoves();
         handler.removeLiquidity(2281056921148190965963613, 1455021431308021796148);
 
+        // The drift precondition is still reached: the share-value decrement exceeds
+        // the principal-credited tracker. Pre-fix this caused the lock.
         assertTrue(
-            handler.removeActualRevertSeen(),
-            "expected removeLiquidity to actually revert with Panic(0x11) at line 252"
+            handler.removeUnderflowPreconditionSeen(),
+            "expected the underflow precondition (liquidityRemoved > tracker) to be reached"
         );
+        // With the saturating fix, removeLiquidity no longer reverts at line 252:
+        // the LP is NOT locked out of its funds.
+        assertFalse(
+            handler.removeActualRevertSeen(),
+            "saturating fix: removeLiquidity must NOT revert with Panic(0x11) at line 252"
+        );
+        // The final remove must have actually COMPLETED, not merely avoided the
+        // line-252 panic: the handler's try/catch swallows every other revert
+        // without setting removeActualRevertSeen, so without this assertion the
+        // replay could pass vacuously while the LP is still locked.
         assertEq(
-            handler.rewardUnderflowContext(),
-            "removeLiquidity:252 actual Panic(0x11) underflow",
-            "underflow must be attributed to the reward decrement at line 252"
+            handler.successfulRemoves(),
+            removesBefore + 1,
+            "final removeLiquidity must complete successfully"
         );
     }
 

@@ -21,10 +21,15 @@ contract ReproToken is ERC20 {
  *         non-underflow invariant is FALSIFIED. See
  *         reports/vinuchain-audit-2026-06-10/05-VinuFinance-Backend.md (S1 / A3).
  *
- * VERDICT: FALSIFIED. removeLiquidity reverts with an arithmetic underflow
- * (Panic 0x11) at BasePool.sol:252:
+ * VERDICT: FIXED (audit task P2). Pre-fix, removeLiquidity reverted with an
+ * arithmetic underflow (Panic 0x11) at BasePool.sol:252:
  *
  *     _updateRewardAndSend(_onBehalfOf, lastTrackedLiquidity[_onBehalfOf] - liquidityRemoved)
+ *
+ * The saturating-subtraction fix floors the new tracked liquidity at 0 instead of
+ * reverting, so the LP can now withdraw. This test FLIPS from proving-the-bug to
+ * proving-the-fix: it sets up the exact same drift (decrement > tracker) and then
+ * asserts removeLiquidity SUCCEEDS and the LP receives its liquidity.
  *
  * ROOT CAUSE — share-price drift between two accounting systems
  * ------------------------------------------------------------
@@ -52,11 +57,10 @@ contract ReproToken is ERC20 {
  * LP cannot remove or claim until pool state shifts enough to make the subtraction
  * valid again, which it may never do.
  *
- * SCOPE NOTE: this is a CHARACTERIZATION test of a known-bad path. It ASSERTS the
- * revert; it does NOT change deployed-contract semantics (audit task scope). A
- * saturating-subtraction fix (audit task P2) at lines 252 and 437 — flooring the
- * new liquidity at 0 — would make this revert a clean exit and is the recommended
- * remediation.
+ * SCOPE NOTE: post-fix this is a REGRESSION test of the remediation. It sets up the
+ * known-bad drift and asserts the saturating-subtraction fix (audit task P2) at
+ * lines 252 and 437 — flooring the new liquidity at 0 — turns the former revert
+ * into a clean exit, so the LP can withdraw its funds.
  */
 contract RewardUnderflowReproTest is Test {
     BasePool pool;
@@ -116,10 +120,12 @@ contract RewardUnderflowReproTest is Test {
 
     /**
      * @notice Minimal 3-LP reproduction (mirrors the invariant fuzzer's shrunk
-     *         counterexample). LP_SMALL's removeLiquidity reverts with arithmetic
-     *         underflow at BasePool.sol:252 and is locked out of its funds.
+     *         counterexample). Pre-fix, LP_SMALL's removeLiquidity reverted with
+     *         arithmetic underflow at BasePool.sol:252 and was locked out of its
+     *         funds. Post-fix (saturating subtraction), removeLiquidity succeeds and
+     *         LP_SMALL receives its liquidity.
      */
-    function test_S1_FALSIFIED_removeLiquidity_locks_on_underflow() public {
+    function test_S1_FIXED_removeLiquidity_succeeds_after_saturating_fix() public {
         // 1. Seed the pool above minLiquidity so the inherited core line-245
         //    underflow (totalLiquidity < minLiquidity) is NOT the cause.
         vm.prank(LP_SEED);
@@ -159,9 +165,16 @@ contract RewardUnderflowReproTest is Test {
         emit log_named_uint("lastTrackedLiquidity (tracker)", tracked);
         assertGt(liquidityRemoved, tracked, "precondition: decrement must exceed tracker");
 
-        // 6. THE LOCK: removeLiquidity reverts with arithmetic underflow at line 252.
+        // 6. THE FIX: removeLiquidity now SUCCEEDS (the saturating subtraction floors
+        //    the tracker at 0 instead of reverting). LP_SMALL receives its liquidity
+        //    and is no longer locked out.
+        uint256 balBefore = loanCcy.balanceOf(LP_SMALL);
         vm.prank(LP_SMALL);
-        vm.expectRevert(stdError.arithmeticError);
-        pool.removeLiquidity(LP_SMALL, smallShares);
+        pool.removeLiquidity(LP_SMALL, smallShares); // must NOT revert
+        uint256 balAfter = loanCcy.balanceOf(LP_SMALL);
+
+        // LP got its funds back, and the tracker floored at 0 (not reverted/wrapped).
+        assertEq(balAfter - balBefore, liquidityRemoved, "LP_SMALL must receive its liquidity");
+        assertEq(pool.lastTrackedLiquidity(LP_SMALL), 0, "tracker floors at 0 after saturating decrement");
     }
 }

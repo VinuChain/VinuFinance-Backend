@@ -2,14 +2,19 @@
 
 This document records the outcome of the audit-remediation work on the reward
 bookkeeping added to `BasePool`, and writes down the invariant the subsystem is
-*supposed* to satisfy (audit findings S1 and A3). It is descriptive: no
-deployed-contract semantics were changed by this work.
+*supposed* to satisfy (audit findings S1 and A3).
 
 Source audit: `reports/vinuchain-audit-2026-06-10/05-VinuFinance-Backend.md`.
 
+> **STATUS: S1 FIXED.** The saturating-subtraction remediation (audit task P2) has
+> been applied to the two reward-tracker decrements in `BasePool` (`removeLiquidity`
+> and `claim`). The previously-falsifying invariant is now a live, green guard. This
+> change **does** alter deployed-contract semantics and is **committed, NOT pushed**
+> — it requires owner review and a deliberate deploy. See "Fix applied" below.
+
 ---
 
-## S1 — Reward non-underflow invariant: **FALSIFIED**
+## S1 — Reward non-underflow invariant: **FIXED** (was FALSIFIED)
 
 ### The intended invariant
 
@@ -23,12 +28,13 @@ every decrement site:
 Under Solidity 0.8 checked arithmetic, a violation reverts the whole call and
 **locks the LP's position** (cannot remove or claim).
 
-### Verdict: the invariant does NOT hold
+### Verdict: the invariant did NOT hold (pre-fix); the fix below restores it
 
-A stateful Foundry invariant fuzzer (`test/foundry/RewardInvariant.t.sol`) finds a
-short sequence that violates the `removeLiquidity` decrement. The minimal,
-deterministic reproduction is in `test/foundry/RewardUnderflowRepro.t.sol` and
-asserts the real on-chain `Panic(0x11)` revert.
+A stateful Foundry invariant fuzzer (`test/foundry/RewardInvariant.t.sol`) found a
+short sequence that violated the `removeLiquidity` decrement. The minimal,
+deterministic reproduction is in `test/foundry/RewardUnderflowRepro.t.sol`. With the
+fix applied, that reproduction now asserts the LP can withdraw (no revert), and the
+invariant `invariant_exitNeverRevertsFromRewardUnderflow` is a live green guard.
 
 #### Why it drifts (root cause = audit A3)
 
@@ -75,22 +81,45 @@ consistently). `test/foundry/RewardInvariant.t.sol` keeps an *active* regression
 guard (`invariant_claimNeverRevertsFromRewardUnderflow`) that turns red if a future
 change makes the claim site reachable.
 
-### Recommended fix (audit task P2) — owner decision required
+### Fix applied (audit task P2) — committed, NOT pushed; needs owner review + deploy
 
-Make the two decrements **saturating** (floor at zero) so reward bookkeeping can
-never block a fund movement:
+The two decrements are now **saturating** (floor at zero) via a single internal
+helper `_satSub(a, b) => a > b ? a - b : 0`, so reward bookkeeping can never block a
+fund movement:
 
 ```solidity
-// at BasePool.sol:252 and :437, instead of `tracked - amt`:
-uint256 newLiq = tracked > amt ? tracked - amt : 0;
+// BasePool.sol — new helper:
+function _satSub(uint256 a, uint256 b) internal pure returns (uint256) {
+    return a > b ? a - b : 0;
+}
+
+// removeLiquidity (was: lastTrackedLiquidity[_onBehalfOf] - liquidityRemoved):
+_updateRewardAndSend(_onBehalfOf, _satSub(lastTrackedLiquidity[_onBehalfOf], liquidityRemoved));
+
+// claim (was: lastTrackedLiquidity[_onBehalfOf] - claimInfo.loanAmount):
+(uint128 lastLiquidity, uint32 timeSinceLastReward) =
+    _updateReward(_onBehalfOf, _satSub(lastTrackedLiquidity[_onBehalfOf], claimInfo.loanAmount));
 ```
 
-Trade-off: this slightly under-credits rewards at the boundary (reward is computed
-on `lastTrackedLiquidity`, which would floor at 0), but never traps funds — the
-audit's stated acceptable trade-off. This is a **deployed-semantics change** and was
-intentionally NOT applied here; it requires owner sign-off. After applying it,
-delete the `vm.skip(true)` in `invariant_exitNeverRevertsFromRewardUnderflow` so the
-invariant becomes a live guard, and re-run the full suite.
+(The helper form was chosen over an inline ternary because an inline ternary at the
+`claim` site introduced an extra stack slot that tripped `Stack too deep` under the
+project's non-via-IR Solc 0.8.19 profile. The helper consumes no caller stack slot.)
+
+**Flooring at zero does NOT enable over-crediting.** The reward actually sent is
+computed on the *old* tracker value (captured as `oldLiquidity` in `_updateReward`
+*before* this subtraction writes the new value) times the elapsed interval. The
+saturating subtraction only sets the *next* interval's base, and 0 is the smallest
+possible base, so it can only ever *under*-credit a future interval — never inflate
+`_liquidity` beyond pool inflow. This is verified live by
+`invariant_rewardLiquidityNeverExceedsInflow` (the non-tautological over-crediting
+bound), which stays green post-fix.
+
+Trade-off: this slightly under-credits rewards at the boundary (the audit's stated
+acceptable trade-off), but never traps funds.
+
+The `vm.skip(true)` in `invariant_exitNeverRevertsFromRewardUnderflow` was removed so
+the invariant is now a live guard; the deterministic repro and replay tests were
+flipped from proving-the-bug to proving-the-fix.
 
 > NOTE: the same `removeLiquidity` path also has an *inherited MYSO-core* underflow
 > at `BasePool.sol:245` (`totalLiquidity - minLiquidity`) when a pool's
@@ -108,8 +137,8 @@ invariant becomes a live guard, and re-run the full suite.
 | `foundry.toml` | Foundry profile for the security harness (Hardhat remains the canonical toolchain) |
 | `test/foundry/mocks/MockRewardController.sol` | Minimal `IController` stub mirroring the reward distribution arithmetic |
 | `test/foundry/RewardInvariant.handler.sol` | Stateful fuzz handler (add/remove/borrow/repay/claim/reinvest/warp) with precise underflow attribution |
-| `test/foundry/RewardInvariant.t.sol` | Invariants: S1 (skipped, falsified), claim-side guard, reward conservation (P4), deterministic replay |
-| `test/foundry/RewardUnderflowRepro.t.sol` | Minimal deterministic repro asserting the real revert |
+| `test/foundry/RewardInvariant.t.sol` | Invariants: S1 (now LIVE + green post-fix), claim-side guard, reward conservation (P4), over-crediting bound (P4), deterministic replay |
+| `test/foundry/RewardUnderflowRepro.t.sol` | Minimal deterministic repro — now asserts the LP CAN withdraw (proves the fix) |
 
 Run: `npm run test:foundry` (after `forge install --no-git foundry-rs/forge-std`).
 

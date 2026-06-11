@@ -249,7 +249,7 @@ contract BasePool is IBasePool, Pausable, IPausable {
         // update LP arrays and check for auto increment
         updateLpArrays(lpInfo, numShares, false);
 
-        _updateRewardAndSend(_onBehalfOf, lastTrackedLiquidity[_onBehalfOf] - liquidityRemoved);
+        _updateRewardAndSend(_onBehalfOf, _satSub(lastTrackedLiquidity[_onBehalfOf], liquidityRemoved));
 
         // transfer liquidity
         loanCcyToken.safeTransfer(msg.sender, liquidityRemoved);
@@ -434,7 +434,7 @@ contract BasePool is IBasePool, Pausable, IPausable {
             applicableShares
         );
             
-        (uint128 lastLiquidity, uint32 timeSinceLastReward) = _updateReward(_onBehalfOf, lastTrackedLiquidity[_onBehalfOf] - claimInfo.loanAmount);
+        (uint128 lastLiquidity, uint32 timeSinceLastReward) = _updateReward(_onBehalfOf, _satSub(lastTrackedLiquidity[_onBehalfOf], claimInfo.loanAmount));
 
         // update LP's from loan index to prevent double claiming and check share pointer
         checkSharePtrIncrement(
@@ -1157,6 +1157,22 @@ contract BasePool is IBasePool, Pausable, IPausable {
         } else {
             rate = r2;
         }
+    }
+
+    /**
+     * @notice Saturating subtraction (floors at 0) for the reward tracker.
+     * @dev Audit task P2 (finding S1). The reward tracker `lastTrackedLiquidity`
+     * is credited with raw principal on add but decremented by the share-VALUE of
+     * a position on exit/claim; the per-share value rises over time, so the
+     * decrement can exceed the tracker. A plain checked subtraction would revert
+     * (Panic 0x11) and permanently lock removeLiquidity/claim for that LP. Flooring
+     * at 0 cannot over-credit rewards: the reward sent is computed on the OLD
+     * tracker value (before this subtraction), and a smaller new value can only
+     * under-credit the NEXT interval — never inflate `_liquidity` beyond pool
+     * inflow.
+     */
+    function _satSub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a - b : 0;
     }
 
     /**
