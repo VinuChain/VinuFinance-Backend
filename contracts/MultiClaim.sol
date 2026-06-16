@@ -4,12 +4,13 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {IBasePool} from "./interfaces/IBasePool.sol";
 
 /// @title MultiClaim
 /// @author Samuele Marro
 /// @notice Allows a user to claim multiple non-consecutive loans in a single transaction
-contract MultiClaim {
+contract MultiClaim is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     /// @notice Claims multiple contracts 
@@ -26,7 +27,7 @@ contract MultiClaim {
         uint256[][] calldata _loanIdxs,
         bool[] calldata _isReinvested,
         uint256 _deadline
-    ) external {
+    ) external nonReentrant {
         require(_loanIdxs.length > 0, "MultiClaim: Empty loan index array.");
         require(
             _loanIdxs.length == _isReinvested.length,
