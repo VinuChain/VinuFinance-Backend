@@ -33,6 +33,7 @@
     "chai": "^4.3.6",
     "chai-like": "^1.1.1",
     "chai-things": "^0.2.0",
+    "dotenv": "^17.4.2",
     "hardhat-gas-reporter": "^1.0.9",
     "mocha": "^9.2.1",
     "solidity-coverage": "^0.8.2",
@@ -41,7 +42,7 @@
   },
   "scripts": {
     "test_legacy": "./node_modules/.bin/mocha --full-trace --config ./test/mocharc.nightly.json",
-    "preprocess" : "npx ts-node scripts/preprocess_for_tests.ts",
+    "preprocess": "npx ts-node scripts/preprocess_for_tests.ts",
     "test": "TS_NODE_FILES=true && npm run preprocess && npx hardhat test",
     "coverage": "TS_NODE_FILES=true && npm run preprocess && npx hardhat coverage",
     "test:foundry": "forge test --match-path \"test/foundry/*.t.sol\" -vv"

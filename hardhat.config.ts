@@ -1,3 +1,4 @@
+require('dotenv').config()
 require("@nomiclabs/hardhat-ethers")
 require('solidity-docgen');
 import { HardhatUserConfig } from "hardhat/config";
@@ -26,6 +27,11 @@ export default{
             accounts: {
                 count: 2000
             }
+        },
+        vinuchain: {
+            url: process.env.VINUCHAIN_RPC_URL || 'https://rpc.vinuchain.org',
+            chainId: 207,
+            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
         }
     }
 }

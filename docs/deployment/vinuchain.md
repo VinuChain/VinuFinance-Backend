@@ -268,6 +268,68 @@ VinuChain has low gas costs:
 }
 ```
 
+## Production Deploy Runbook
+
+The canonical production deploy uses **`scripts/deploy.prod.ts`** (env-driven, no
+mocks, no hardcoded escrow). The legacy `scripts/deploy.ts` is a LOCAL DEMO only
+(it deploys MockERC20 tokens and runs an inline smoke test) — do not use it for
+mainnet.
+
+### Prerequisites
+
+1. **Environment**: copy `.env.example` to `.env` and fill in:
+   - `PRIVATE_KEY` — the funded deployer EOA (kept secret; `.env` is gitignored).
+   - `VINUCHAIN_RPC_URL` — defaults to `https://rpc.vinuchain.org` if unset.
+   - `LOAN_CCY_TOKEN`, `COLL_CCY_TOKEN`, `VOTE_TOKEN`, `VETO_HOLDER`,
+     `EMERGENCY_ESCROW` — all required; the script aborts on any missing,
+     zero, or placeholder address.
+   - Optional pool/governance params (`LOAN_TENOR`, `R1`/`R2`,
+     `LIQUIDITY_BND_1/2`, `MIN_LOAN`, `CREATOR_FEE`, `MIN_LIQUIDITY`,
+     `REWARD_COEFFICIENT`, `MAX_LOAN_PER_COLL`, the four `*_THRESHOLD`s,
+     `SNAPSHOT_TOKEN_EVERY`, `CONTROLLER_LOCK_PERIOD`) — production-safe
+     defaults are baked in; override only deliberately.
+2. **Funded deployer**: the deployer must hold at least `0.1 VC` (checked by the
+   script before any transaction).
+3. **Compile**: `npx hardhat compile` must succeed.
+
+The script validates every address (`^0x[0-9a-fA-F]{40}$`, non-zero,
+non-placeholder), asserts `LOAN_CCY_TOKEN != COLL_CCY_TOKEN`, `R1 > R2 > 0`,
+`LIQUIDITY_BND_2 > LIQUIDITY_BND_1 > 0`, `MIN_LIQUIDITY >= 1000`, each governance
+threshold in `(0, 10000]`, and that the connected chain is `207` (VinuChain
+mainnet). It refuses to run on any other chain.
+
+### Deploy Command
+
+```bash
+npx hardhat run scripts/deploy.prod.ts --network vinuchain
+```
+
+The script deploys, in order: **Controller -> BasePool -> MultiClaim ->
+EmergencyWithdrawal**, writes `deployments/vinuchain.json` (addresses + params +
+timestamp + deployer), and prints a summary and post-deploy checklist. It does
+**not** mutate pool state (no whitelist proposal, no approvals, no smoke test) —
+those are the manual steps below.
+
+### Post-Deploy Steps
+
+1. **Record** `deployments/vinuchain.json` (commit it, archive it, share addresses).
+2. **Verify each contract** on the explorer:
+   ```bash
+   npx hardhat verify --network vinuchain <CONTROLLER_ADDR> <controller ctor args...>
+   npx hardhat verify --network vinuchain --constructor-args arguments.js <POOL_ADDR>
+   npx hardhat verify --network vinuchain <MULTICLAIM_ADDR>
+   npx hardhat verify --network vinuchain <EMERGENCY_WITHDRAWAL_ADDR>
+   ```
+   (See "Contract Verification" above for the BasePool `arguments.js` format.)
+3. **Update [vinuchain-lists](https://github.com/VinuChain/vinuchain-lists) and the
+   frontend config** with the new contract addresses.
+4. **Transfer the Controller veto holder to the multisig** if it was bootstrapped
+   from an EOA (`VETO_HOLDER`).
+5. **Governance bootstrap**: stake VINU in the Controller, create the whitelist
+   proposal for the pool, vote, and have the veto holder approve it.
+6. **Smoke test with small amounts**: `addLiquidity` -> `borrow` -> `repay` ->
+   `claim`, then confirm balances and pool state.
+
 ## Post-Deployment Checklist
 
 ### Immediate Actions
