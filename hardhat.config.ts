@@ -8,8 +8,7 @@ import "hardhat-contract-sizer"
 export default{
     defaultNetwork: "hardhat",
     solidity: {
-        version: "0.8.1",
-        sourcesDir: 'contracts/solidity',
+        version: "0.8.19",
         settings: {
             optimizer: {
             enabled: true,
@@ -18,12 +17,12 @@ export default{
             },
         },
     },
-    allowUnlimitedContractSize: true,
     contractSizer: {
         runOnCompile: true
     },
     networks: {
         hardhat: {
+            allowUnlimitedContractSize: true,
             accounts: {
                 count: 2000
             }
