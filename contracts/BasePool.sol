@@ -223,7 +223,12 @@ contract BasePool is IBasePool, Pausable, IPausable {
         address _onBehalfOf,
         uint128 numShares
     ) external override {
-        delete lastAddOfTxOrigin[_onBehalfOf];
+        // NOTE: no clear of lastAddOfTxOrigin here. The same-block flash-loan guard
+        // (set in _addLiquidity, checked in borrow) stores block.timestamp and is
+        // compared against the *current* block.timestamp, so it self-expires the
+        // moment the block advances — no explicit clear is needed. Do NOT re-key a
+        // clear to tx.origin here: that would let an attacker add -> removeLiquidity
+        // -> borrow within a single block and bypass the guard (strictly worse).
         // verify LP info and eligibility
         checkSenderApproval(
             _onBehalfOf,
