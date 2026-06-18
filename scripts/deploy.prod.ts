@@ -104,6 +104,39 @@ function requireBigNumber(name: string): string {
     return bn.toString()
 }
 
+// Assert an address has deployed bytecode on the connected network (rejects EOAs
+// and wrong/undeployed addresses). Read-only (eth_getCode), no transaction.
+async function assertIsContract(label: string, addr: string): Promise<void> {
+    let code: string
+    try {
+        code = await ethers.provider.getCode(addr)
+    } catch (e: any) {
+        throw new Error(`Failed to read code for ${label} ${addr}: ${e?.message || e}.`)
+    }
+    if (code === undefined || code === null || code === "0x" || code === "0x0") {
+        throw new Error(`${label} ${addr} has no contract code on this network (EOA or undeployed).`)
+    }
+}
+
+// Read and sanity-check an ERC20 token's decimals() on-chain (read-only, no tx).
+// Returns the integer decimals; throws if the read fails or is out of [0, 30].
+async function readTokenDecimals(label: string, addr: string): Promise<number> {
+    let d: number
+    try {
+        const token = new ethers.Contract(addr, ["function decimals() view returns (uint8)"], ethers.provider)
+        d = Number(await token.decimals())
+    } catch (e: any) {
+        throw new Error(
+            `Failed to read decimals() from ${label} ${addr}: ${e?.message || e}. ` +
+                `Verify ${label} is a deployed ERC20 on this network.`
+        )
+    }
+    if (!Number.isInteger(d) || d < 0 || d > 30) {
+        throw new Error(`${label} decimals from-chain (${d}) is out of the sane [0, 30] range.`)
+    }
+    return d
+}
+
 // --- main -----------------------------------------------------------------
 
 async function main() {
@@ -236,10 +269,18 @@ async function main() {
                 `(_addLiquidity requires totalLpShares < minLoan * BASE; BasePool.sol:867).`
         )
     }
-    // _creatorFee <= MAX_FEE (300*10**14 = 3e16 = 0.03 * 1e18) (BasePool.sol:23,137).
+    // _creatorFee in [0, MAX_FEE]. MAX_FEE = 300*10**14 = 3e16 = 0.03 * 1e18
+    // (BasePool.sol:23,137). envBaseOr uses parseUnits, which ACCEPTS a negative human
+    // decimal ("-0.01" -> negative base value), so the >= 0 floor is enforced here.
+    if (BigNumber.from(CREATOR_FEE).lt(0)) {
+        throw new Error(`CREATOR_FEE (${CREATOR_FEE}) must be >= 0.`)
+    }
     if (BigNumber.from(CREATOR_FEE).gt(BigNumber.from("30000000000000000"))) {
         throw new Error(`CREATOR_FEE (${CREATOR_FEE}) must be <= 3e16 (MAX_FEE = 300bps; BasePool.sol:137).`)
     }
+    // R1/R2 are also parsed via envBaseOr (parseUnits accepts negatives). The R2 > 0
+    // and R1 > R2 checks above already exclude any negative rate, so no extra floor
+    // is needed for them.
 
     // -- Controller constructor requires (contracts/Controller.sol:106-110) --
     // Thresholds in (0, THRESHOLD_BASE=10000]; snapshotEvery > 0.
@@ -256,6 +297,11 @@ async function main() {
     if (SNAPSHOT_TOKEN_EVERY <= 0) {
         throw new Error("SNAPSHOT_TOKEN_EVERY must be > 0 (Controller.sol:110).")
     }
+    // _lockPeriod has no constructor bound (0 is allowed = no lock); envIntOr already
+    // rejects negatives/non-integers, but assert >= 0 explicitly for the sweep.
+    if (CONTROLLER_LOCK_PERIOD < 0) {
+        throw new Error(`CONTROLLER_LOCK_PERIOD (${CONTROLLER_LOCK_PERIOD}) must be >= 0.`)
+    }
 
     // -- REWARD_COEFFICIENT must fit BasePool's `uint96 _rewardCoefficient` --
     // (BasePool.sol:119). A value > 2^96-1 would overflow the constructor arg and
@@ -269,35 +315,50 @@ async function main() {
         )
     }
 
-    // -- collateral token decimals: QUERY on-chain (no tx), validate, use as the arg --
-    // BasePool.loanTerms scales by `10 ** collTokenDecimals` (BasePool.sol:654), so a
-    // wrong value mis-collateralizes the pool for any non-18-decimal collateral. We
-    // read the authoritative value from the collateral token itself instead of
-    // guessing, and (if the operator set the optional COLL_TOKEN_DECIMALS override)
-    // assert they match — catching a wrong override before any deploy.
-    let COLL_TOKEN_DECIMALS: number
-    try {
-        const collToken = new ethers.Contract(
-            COLL_CCY_TOKEN,
-            ["function decimals() view returns (uint8)"],
-            ethers.provider
-        )
-        COLL_TOKEN_DECIMALS = Number(await collToken.decimals())
-    } catch (e: any) {
-        throw new Error(
-            `Failed to read decimals() from collateral token ${COLL_CCY_TOKEN}: ${e?.message || e}. ` +
-                `Verify COLL_CCY_TOKEN is a deployed ERC20 on this network.`
-        )
-    }
-    if (!Number.isInteger(COLL_TOKEN_DECIMALS) || COLL_TOKEN_DECIMALS < 0 || COLL_TOKEN_DECIMALS > 30) {
-        throw new Error(
-            `Collateral token decimals from-chain (${COLL_TOKEN_DECIMALS}) is out of the sane [0, 30] range.`
-        )
-    }
+    // -- ON-CHAIN token validation (read-only, NO tx; before any deploy) --
+    // All three token addresses passed requireAddress (regex + nonzero + anti-
+    // placeholder) above. Here we additionally probe them ON-CHAIN so a wrong or EOA
+    // address fails pre-flight rather than after the Controller is deployed (orphan):
+    //   - all 3 must have contract code (getCode != 0x);
+    //   - LOAN_CCY_TOKEN & COLL_CCY_TOKEN must expose decimals() (they ARE ERC20s and
+    //     their decimals feed the economic params / loanTerms scaling);
+    //   - VOTE_TOKEN is the Controller's IERC20 voteToken — we verify it's a contract
+    //     and (cheaply) that it answers totalSupply(), without assuming its decimals.
+    await assertIsContract("LOAN_CCY_TOKEN", LOAN_CCY_TOKEN)
+    await assertIsContract("COLL_CCY_TOKEN", COLL_CCY_TOKEN)
+    await assertIsContract("VOTE_TOKEN", VOTE_TOKEN)
+
+    // Loan token must be a readable ERC20 (decimals()). The value is informational
+    // here — the loan-denominated econ params are operator-provided raw units — but a
+    // failed read means LOAN_CCY_TOKEN is not the ERC20 the operator thinks it is.
+    const LOAN_TOKEN_DECIMALS = await readTokenDecimals("LOAN_CCY_TOKEN", LOAN_CCY_TOKEN)
+
+    // Collateral decimals: QUERY on-chain and USE as the BasePool _collTokenDecimals
+    // arg. BasePool.loanTerms scales by `10 ** collTokenDecimals` (BasePool.sol:654),
+    // so a wrong value mis-collateralizes the pool for any non-18-decimal collateral.
+    const COLL_TOKEN_DECIMALS = await readTokenDecimals("COLL_CCY_TOKEN", COLL_CCY_TOKEN)
+    // If the operator set the optional COLL_TOKEN_DECIMALS override, assert it matches
+    // the on-chain value (catches a wrong override before any deploy).
     if (COLL_TOKEN_DECIMALS_OVERRIDE !== undefined && COLL_TOKEN_DECIMALS_OVERRIDE !== COLL_TOKEN_DECIMALS) {
         throw new Error(
             `COLL_TOKEN_DECIMALS override (${COLL_TOKEN_DECIMALS_OVERRIDE}) does not match the collateral ` +
                 `token's on-chain decimals (${COLL_TOKEN_DECIMALS}). Remove the override or fix it.`
+        )
+    }
+
+    // Vote token: confirm it answers a basic ERC20 view (totalSupply) so a non-token
+    // contract address is caught. Cheap, read-only; result is informational.
+    try {
+        const voteToken = new ethers.Contract(
+            VOTE_TOKEN,
+            ["function totalSupply() view returns (uint256)"],
+            ethers.provider
+        )
+        await voteToken.totalSupply()
+    } catch (e: any) {
+        throw new Error(
+            `VOTE_TOKEN ${VOTE_TOKEN} did not answer totalSupply(): ${e?.message || e}. ` +
+                `Verify it is the governance ERC20.`
         )
     }
 
@@ -388,6 +449,7 @@ async function main() {
             voteToken: VOTE_TOKEN,
             vetoHolder: VETO_HOLDER,
             emergencyEscrow: EMERGENCY_ESCROW,
+            loanTokenDecimals: LOAN_TOKEN_DECIMALS,
             collTokenDecimals: COLL_TOKEN_DECIMALS,
             loanTenor: LOAN_TENOR,
             maxLoanPerColl: MAX_LOAN_PER_COLL,
