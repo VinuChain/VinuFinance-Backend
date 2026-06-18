@@ -128,12 +128,21 @@ async function main() {
     const VETO_HOLDER = requireAddress("VETO_HOLDER")
     const EMERGENCY_ESCROW = requireAddress("EMERGENCY_ESCROW")
 
+    // Collateral token decimals are NOT read as a defaulted policy param: they are
+    // QUERIED on-chain from the collateral token in the pre-flight block (they feed
+    // BasePool.loanTerms' `10 ** collTokenDecimals` scaling, BasePool.sol:654, so a
+    // wrong guess mis-collateralizes the pool). An optional COLL_TOKEN_DECIMALS env
+    // var, if set, is asserted to EQUAL the on-chain value (catches a wrong override);
+    // undefined means "trust on-chain".
+    const COLL_TOKEN_DECIMALS_OVERRIDE =
+        process.env.COLL_TOKEN_DECIMALS === undefined || process.env.COLL_TOKEN_DECIMALS.trim() === ""
+            ? undefined
+            : envIntOr("COLL_TOKEN_DECIMALS", 0)
+
     // ---- decimal-INDEPENDENT policy params (safe production defaults; override via env) ----
     // These are pure policy: a duration, BASE=1e18 rate/fee fractions, and a reward
     // coefficient. They do NOT depend on the loan token's decimals, so a baked
     // default is safe.
-    // collateral token decimals (uint256) — defaults to 18 (WVC).
-    const COLL_TOKEN_DECIMALS = envIntOr("COLL_TOKEN_DECIMALS", 18)
     // loan tenor in seconds; default 30 days. BasePool enforces >= MIN_TENOR (1 day).
     const LOAN_TENOR = envIntOr("LOAN_TENOR", 2592000)
     // interest rate params, BASE-denominated. r1 must be > r2 (BasePool requires r1 > r2 > 0).
@@ -236,6 +245,50 @@ async function main() {
     }
     if (SNAPSHOT_TOKEN_EVERY <= 0) {
         throw new Error("SNAPSHOT_TOKEN_EVERY must be > 0 (Controller.sol:110).")
+    }
+
+    // -- REWARD_COEFFICIENT must fit BasePool's `uint96 _rewardCoefficient` --
+    // (BasePool.sol:119). A value > 2^96-1 would overflow the constructor arg and
+    // make the BasePool deploy revert AFTER the Controller is already on-chain
+    // (orphan). Range-check it here, before any tx.
+    const MAX_UINT96 = BigNumber.from(2).pow(96).sub(1) // 79228162514264337593543950335
+    if (BigNumber.from(REWARD_COEFFICIENT).lt(0) || BigNumber.from(REWARD_COEFFICIENT).gt(MAX_UINT96)) {
+        throw new Error(
+            `REWARD_COEFFICIENT (${REWARD_COEFFICIENT}) must be in [0, 2^96-1] (${MAX_UINT96.toString()}) ` +
+                `to fit BasePool's uint96 _rewardCoefficient (BasePool.sol:119).`
+        )
+    }
+
+    // -- collateral token decimals: QUERY on-chain (no tx), validate, use as the arg --
+    // BasePool.loanTerms scales by `10 ** collTokenDecimals` (BasePool.sol:654), so a
+    // wrong value mis-collateralizes the pool for any non-18-decimal collateral. We
+    // read the authoritative value from the collateral token itself instead of
+    // guessing, and (if the operator set the optional COLL_TOKEN_DECIMALS override)
+    // assert they match — catching a wrong override before any deploy.
+    let COLL_TOKEN_DECIMALS: number
+    try {
+        const collToken = new ethers.Contract(
+            COLL_CCY_TOKEN,
+            ["function decimals() view returns (uint8)"],
+            ethers.provider
+        )
+        COLL_TOKEN_DECIMALS = Number(await collToken.decimals())
+    } catch (e: any) {
+        throw new Error(
+            `Failed to read decimals() from collateral token ${COLL_CCY_TOKEN}: ${e?.message || e}. ` +
+                `Verify COLL_CCY_TOKEN is a deployed ERC20 on this network.`
+        )
+    }
+    if (!Number.isInteger(COLL_TOKEN_DECIMALS) || COLL_TOKEN_DECIMALS < 0 || COLL_TOKEN_DECIMALS > 30) {
+        throw new Error(
+            `Collateral token decimals from-chain (${COLL_TOKEN_DECIMALS}) is out of the sane [0, 30] range.`
+        )
+    }
+    if (COLL_TOKEN_DECIMALS_OVERRIDE !== undefined && COLL_TOKEN_DECIMALS_OVERRIDE !== COLL_TOKEN_DECIMALS) {
+        throw new Error(
+            `COLL_TOKEN_DECIMALS override (${COLL_TOKEN_DECIMALS_OVERRIDE}) does not match the collateral ` +
+                `token's on-chain decimals (${COLL_TOKEN_DECIMALS}). Remove the override or fix it.`
+        )
     }
 
     // ---- deployer balance check ----
