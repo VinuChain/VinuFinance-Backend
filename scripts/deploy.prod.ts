@@ -128,10 +128,6 @@ async function main() {
     const VETO_HOLDER = requireAddress("VETO_HOLDER")
     const EMERGENCY_ESCROW = requireAddress("EMERGENCY_ESCROW")
 
-    if (LOAN_CCY_TOKEN.toLowerCase() === COLL_CCY_TOKEN.toLowerCase()) {
-        throw new Error("LOAN_CCY_TOKEN and COLL_CCY_TOKEN must differ (BasePool rejects equal tokens).")
-    }
-
     // ---- decimal-INDEPENDENT policy params (safe production defaults; override via env) ----
     // These are pure policy: a duration, BASE=1e18 rate/fee fractions, and a reward
     // coefficient. They do NOT depend on the loan token's decimals, so a baked
@@ -182,25 +178,52 @@ async function main() {
     const SNAPSHOT_TOKEN_EVERY = envIntOr("SNAPSHOT_TOKEN_EVERY", 86400) // 1 day
     const CONTROLLER_LOCK_PERIOD = envIntOr("CONTROLLER_LOCK_PERIOD", 604800) // 7 days
 
-    // ---- param sanity (fail fast before any tx) ----
-    if (!BigNumber.from(R1).gt(BigNumber.from(R2))) {
-        throw new Error(`R1 (${R1}) must be greater than R2 (${R2}).`)
+    // ---- PRE-FLIGHT validation (fail fast: NO on-chain tx until everything is valid) ----
+    // This single block runs BEFORE the first `.deploy()` so a bad param can never
+    // leave an orphan Controller on-chain. Each check mirrors the REAL constructor
+    // `require`s read from the contracts (cited inline), so a value that passes here
+    // will also pass the constructor.
+
+    // -- BasePool constructor requires (contracts/BasePool.sol:121-137) --
+    // _tokens[0] != _tokens[1] (BasePool.sol:127) — addresses must differ.
+    if (LOAN_CCY_TOKEN.toLowerCase() === COLL_CCY_TOKEN.toLowerCase()) {
+        throw new Error("LOAN_CCY_TOKEN and COLL_CCY_TOKEN must differ (BasePool.sol:127).")
     }
-    if (BigNumber.from(R2).isZero()) {
-        throw new Error("R2 must be greater than 0.")
+    // _loanTenor >= MIN_TENOR (86400) (BasePool.sol:19,130).
+    if (LOAN_TENOR < 86400) {
+        throw new Error(`LOAN_TENOR (${LOAN_TENOR}) must be >= 86400 (MIN_TENOR; BasePool.sol:130).`)
+    }
+    // _maxLoanPerColl > 0 (BasePool.sol:131).
+    if (BigNumber.from(MAX_LOAN_PER_COLL).lte(0)) {
+        throw new Error(`MAX_LOAN_PER_COLL (${MAX_LOAN_PER_COLL}) must be > 0 (BasePool.sol:131).`)
+    }
+    // _rs[0] > _rs[1] && _rs[1] != 0 (BasePool.sol:132: reverts if r1 <= r2 || r2 == 0).
+    if (BigNumber.from(R2).lte(0)) {
+        throw new Error(`R2 (${R2}) must be > 0 (BasePool.sol:132).`)
+    }
+    if (!BigNumber.from(R1).gt(BigNumber.from(R2))) {
+        throw new Error(`R1 (${R1}) must be > R2 (${R2}) (BasePool.sol:132).`)
+    }
+    // _liquidityBnds[1] > _liquidityBnds[0] && _liquidityBnds[0] != 0 (BasePool.sol:133-134).
+    if (BigNumber.from(LIQUIDITY_BND_1).lte(0)) {
+        throw new Error(`LIQUIDITY_BND_1 (${LIQUIDITY_BND_1}) must be > 0 (BasePool.sol:133-134).`)
     }
     if (!BigNumber.from(LIQUIDITY_BND_2).gt(BigNumber.from(LIQUIDITY_BND_1))) {
-        throw new Error(`LIQUIDITY_BND_2 (${LIQUIDITY_BND_2}) must be greater than LIQUIDITY_BND_1 (${LIQUIDITY_BND_1}).`)
+        throw new Error(
+            `LIQUIDITY_BND_2 (${LIQUIDITY_BND_2}) must be > LIQUIDITY_BND_1 (${LIQUIDITY_BND_1}) (BasePool.sol:133-134).`
+        )
     }
-    if (BigNumber.from(LIQUIDITY_BND_1).isZero()) {
-        throw new Error("LIQUIDITY_BND_1 must be greater than 0.")
+    // _minLiquidity >= 1000 (BasePool.sol:136).
+    if (BigNumber.from(MIN_LIQUIDITY).lt(1000)) {
+        throw new Error(`MIN_LIQUIDITY (${MIN_LIQUIDITY}) must be >= 1000 (BasePool.sol:136).`)
     }
-    if (BigNumber.from(MAX_LOAN_PER_COLL).isZero()) {
-        throw new Error("MAX_LOAN_PER_COLL must be greater than 0.")
+    // _creatorFee <= MAX_FEE (300*10**14 = 3e16 = 0.03 * 1e18) (BasePool.sol:23,137).
+    if (BigNumber.from(CREATOR_FEE).gt(BigNumber.from("30000000000000000"))) {
+        throw new Error(`CREATOR_FEE (${CREATOR_FEE}) must be <= 3e16 (MAX_FEE = 300bps; BasePool.sol:137).`)
     }
-    if (BigNumber.from(MIN_LIQUIDITY).lt(BigNumber.from(1000))) {
-        throw new Error("MIN_LIQUIDITY must be at least 1000 (BasePool requirement).")
-    }
+
+    // -- Controller constructor requires (contracts/Controller.sol:106-110) --
+    // Thresholds in (0, THRESHOLD_BASE=10000]; snapshotEvery > 0.
     for (const [n, v] of [
         ["PAUSE_THRESHOLD", PAUSE_THRESHOLD],
         ["UNPAUSE_THRESHOLD", UNPAUSE_THRESHOLD],
@@ -208,11 +231,11 @@ async function main() {
         ["DEWHITELIST_THRESHOLD", DEWHITELIST_THRESHOLD],
     ] as Array<[string, number]>) {
         if (v <= 0 || v > 10000) {
-            throw new Error(`${n} must be in (0, 10000]; got ${v}.`)
+            throw new Error(`${n} must be in (0, 10000] (Controller.sol:106-109); got ${v}.`)
         }
     }
     if (SNAPSHOT_TOKEN_EVERY <= 0) {
-        throw new Error("SNAPSHOT_TOKEN_EVERY must be greater than 0.")
+        throw new Error("SNAPSHOT_TOKEN_EVERY must be > 0 (Controller.sol:110).")
     }
 
     // ---- deployer balance check ----
