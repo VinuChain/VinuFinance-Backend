@@ -87,6 +87,23 @@ function envBaseOr(name: string, fallbackBaseUnits: string): string {
     return ethers.utils.parseUnits(v.trim(), 18).toString()
 }
 
+// Read a REQUIRED raw integer (base-units) BigNumber from env. NO default:
+// throws if unset. Used for the loanCcy-decimal-dependent economic params, where
+// a baked default is unsafe (see the required-params comment block below).
+function requireBigNumber(name: string): string {
+    const v = requireEnv(name)
+    let bn: BigNumber
+    try {
+        bn = BigNumber.from(v)
+    } catch (e) {
+        throw new Error(`Env var ${name} must be a raw integer in loanCcy base units: "${v}"`)
+    }
+    if (bn.isNegative()) {
+        throw new Error(`Env var ${name} must not be negative: "${v}"`)
+    }
+    return bn.toString()
+}
+
 // --- main -----------------------------------------------------------------
 
 async function main() {
@@ -115,27 +132,46 @@ async function main() {
         throw new Error("LOAN_CCY_TOKEN and COLL_CCY_TOKEN must differ (BasePool rejects equal tokens).")
     }
 
-    // ---- pool params (production-safe defaults; override via env) ----
+    // ---- decimal-INDEPENDENT policy params (safe production defaults; override via env) ----
+    // These are pure policy: a duration, BASE=1e18 rate/fee fractions, and a reward
+    // coefficient. They do NOT depend on the loan token's decimals, so a baked
+    // default is safe.
     // collateral token decimals (uint256) — defaults to 18 (WVC).
     const COLL_TOKEN_DECIMALS = envIntOr("COLL_TOKEN_DECIMALS", 18)
     // loan tenor in seconds; default 30 days. BasePool enforces >= MIN_TENOR (1 day).
     const LOAN_TENOR = envIntOr("LOAN_TENOR", 2592000)
-    // maxLoanPerColl in loanCcy base units (raw string). Default 0.5 * 1e18.
-    const MAX_LOAN_PER_COLL = envOr("MAX_LOAN_PER_COLL", MONE.mul(5).div(10).toString())
     // interest rate params, BASE-denominated. r1 must be > r2 (BasePool requires r1 > r2 > 0).
     const R1 = envBaseOr("R1", MONE.mul(15).div(100).toString()) // 15%
     const R2 = envBaseOr("R2", MONE.mul(2).div(100).toString()) // 2%
-    // liquidity bounds in loanCcy base units (raw strings). bnd2 must be > bnd1 > 0.
-    const LIQUIDITY_BND_1 = envOr("LIQUIDITY_BND_1", "10000000000") // 10k (6-dec USDT default)
-    const LIQUIDITY_BND_2 = envOr("LIQUIDITY_BND_2", "100000000000") // 100k (6-dec USDT default)
-    // minLoan in loanCcy base units (raw string). Default 100 (6-dec USDT).
-    const MIN_LOAN = envOr("MIN_LOAN", "100000000")
     // creatorFee, BASE-denominated. BasePool caps at MAX_FEE (300bps = 0.03 * 1e18).
     const CREATOR_FEE = envBaseOr("CREATOR_FEE", MONE.mul(1).div(100).toString()) // 1%
-    // minLiquidity in loanCcy base units (raw string). BasePool requires >= 1000.
-    const MIN_LIQUIDITY = envOr("MIN_LIQUIDITY", "1000000000") // 1k (6-dec USDT)
     // rewardCoefficient, BASE-denominated (uint96). Default 1.0 * 1e18.
     const REWARD_COEFFICIENT = envBaseOr("REWARD_COEFFICIENT", MONE.toString())
+
+    // ---- decimal-DEPENDENT economic params (REQUIRED, NO defaults) ----
+    // CRITICAL: every value below is denominated in the LOAN TOKEN's raw base units
+    // (loanCcy decimals), so its correct magnitude depends entirely on which loan
+    // token this pool uses. BasePool's docstring (contracts/BasePool.sol:99) states
+    // `_maxLoanPerColl` is "denominated in loanCcy decimals", and `loanTerms`
+    // (contracts/BasePool.sol ~:643-649) computes the disbursed loan as roughly
+    //   loan ≈ pledge * maxLoanPerColl / 10**collTokenDecimals
+    // A baked default that assumes the wrong loan-token decimals MIS-COLLATERALIZES
+    // the pool: e.g. a default MAX_LOAN_PER_COLL of 5e17 against a 6-decimal USDT
+    // loan token (the documented USDT(6)/WVC(18) pool) would let ~1 WVC of
+    // collateral borrow ~5e17 raw USDT — practically the entire pool — leaving it
+    // instantly undercollateralized. There is no safe universal default, so these
+    // are REQUIRED env vars; the deploy aborts if any is unset. Provide each as a
+    // raw integer already scaled to the loan token's decimals (see .env.example for
+    // the USDT(6) worked example).
+    // maxLoanPerColl: raw loanCcy units lent per ONE WHOLE collateral token.
+    const MAX_LOAN_PER_COLL = requireBigNumber("MAX_LOAN_PER_COLL")
+    // liquidity bounds in raw loanCcy units. bnd2 must be > bnd1 > 0.
+    const LIQUIDITY_BND_1 = requireBigNumber("LIQUIDITY_BND_1")
+    const LIQUIDITY_BND_2 = requireBigNumber("LIQUIDITY_BND_2")
+    // minLoan in raw loanCcy units.
+    const MIN_LOAN = requireBigNumber("MIN_LOAN")
+    // minLiquidity in raw loanCcy units. BasePool requires >= 1000.
+    const MIN_LIQUIDITY = requireBigNumber("MIN_LIQUIDITY")
 
     // ---- governance params for Controller (protocol constants; override via env) ----
     // Thresholds out of THRESHOLD_BASE (10000). Defaults mirror docs (50%).

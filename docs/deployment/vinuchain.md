@@ -283,20 +283,38 @@ mainnet.
    - `LOAN_CCY_TOKEN`, `COLL_CCY_TOKEN`, `VOTE_TOKEN`, `VETO_HOLDER`,
      `EMERGENCY_ESCROW` — all required; the script aborts on any missing,
      zero, or placeholder address.
-   - Optional pool/governance params (`LOAN_TENOR`, `R1`/`R2`,
-     `LIQUIDITY_BND_1/2`, `MIN_LOAN`, `CREATOR_FEE`, `MIN_LIQUIDITY`,
-     `REWARD_COEFFICIENT`, `MAX_LOAN_PER_COLL`, the four `*_THRESHOLD`s,
-     `SNAPSHOT_TOKEN_EVERY`, `CONTROLLER_LOCK_PERIOD`) — production-safe
-     defaults are baked in; override only deliberately.
-2. **Funded deployer**: the deployer must hold at least `0.1 VC` (checked by the
+   - **Required economic params** (`MAX_LOAN_PER_COLL`, `LIQUIDITY_BND_1`,
+     `LIQUIDITY_BND_2`, `MIN_LOAN`, `MIN_LIQUIDITY`) — these are
+     loan-token-decimal-dependent and have **NO defaults**; the script aborts if
+     any is unset (see the Decimals sanity check below).
+   - Optional decimal-INDEPENDENT policy/governance params (`LOAN_TENOR`,
+     `R1`/`R2`, `CREATOR_FEE`, `REWARD_COEFFICIENT`, `COLL_TOKEN_DECIMALS`, the
+     four `*_THRESHOLD`s, `SNAPSHOT_TOKEN_EVERY`, `CONTROLLER_LOCK_PERIOD`) —
+     production-safe defaults are baked in; override only deliberately.
+2. **Decimals sanity check** (do this BEFORE filling in the economic params): the
+   five required economic params are denominated in the LOAN TOKEN's raw base
+   units, so each must be recomputed for the loan token's decimals. Confirm the
+   loan token's `decimals()` on-chain, then derive each value, e.g.:
+   ```
+   MAX_LOAN_PER_COLL = price_in_loanCcy_per_whole_collateral * 10**loanCcyDecimals
+   ```
+   For the documented USDT(6) loan pool, "0.5 USDT lent per 1 WVC" =
+   `0.5 * 10**6 = 500000`. Getting these wrong (e.g. an 18-decimal value against a
+   6-decimal loan token) mis-collateralizes the pool — `BasePool.loanTerms`
+   computes `loan ≈ pledge * maxLoanPerColl / 10**collTokenDecimals`, and
+   `_maxLoanPerColl` is "denominated in loanCcy decimals"
+   (`contracts/BasePool.sol:99`). The `.env.example` carries a worked USDT(6)
+   example for all five.
+3. **Funded deployer**: the deployer must hold at least `0.1 VC` (checked by the
    script before any transaction).
-3. **Compile**: `npx hardhat compile` must succeed.
+4. **Compile**: `npx hardhat compile` must succeed.
 
 The script validates every address (`^0x[0-9a-fA-F]{40}$`, non-zero,
-non-placeholder), asserts `LOAN_CCY_TOKEN != COLL_CCY_TOKEN`, `R1 > R2 > 0`,
-`LIQUIDITY_BND_2 > LIQUIDITY_BND_1 > 0`, `MIN_LIQUIDITY >= 1000`, each governance
-threshold in `(0, 10000]`, and that the connected chain is `207` (VinuChain
-mainnet). It refuses to run on any other chain.
+non-placeholder), requires the five decimal-dependent economic params (no
+defaults), asserts `LOAN_CCY_TOKEN != COLL_CCY_TOKEN`, `R1 > R2 > 0`,
+`LIQUIDITY_BND_2 > LIQUIDITY_BND_1 > 0`, `MAX_LOAN_PER_COLL > 0`,
+`MIN_LIQUIDITY >= 1000`, each governance threshold in `(0, 10000]`, and that the
+connected chain is `207` (VinuChain mainnet). It refuses to run on any other chain.
 
 ### Deploy Command
 
