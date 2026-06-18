@@ -72,11 +72,18 @@ jobs:
       - name: Run reward invariant / property tests
         run: forge test --match-path "test/foundry/*.t.sol" -vv
 
-  # Static analysis (advisory). Non-blocking until findings are triaged.
+  # Static-analysis gate. Blocks the build on HIGH-severity findings only: the
+  # baseline is clean at High. The protocol's known Medium/Low findings (the
+  # intentional tx.origin flash-loan guard and bonding-curve divide-before-multiply
+  # in BasePool, partial tuple destructuring, and the test mocks) are all analyzed
+  # and remain visible as advisory Slither output without failing the build.
+  # Pinned to slither 0.11.4 (the action container's Python<3.10 ceiling) for
+  # reproducibility; reuses the node-18 hardhat build via ignore-compile. This repo
+  # is dual foundry+hardhat, so Slither is forced onto the hardhat framework
+  # (artifacts/build-info) — otherwise crytic-compile auto-selects foundry and fails.
   slither:
     name: slither-static-analysis
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -84,8 +91,13 @@ jobs:
           node-version: "18"
       - name: Install node dependencies (for OpenZeppelin imports)
         run: yarn install --frozen-lockfile
+      - name: Compile (hardhat) so Slither reuses the verified build
+        run: npx hardhat compile
       - name: Run Slither
-        uses: crytic/slither-action@v0.4.0
+        uses: crytic/slither-action@v0.4.1
         with:
-          solc-version: "0.8.19"
-          fail-on: none
+          slither-config: slither.config.json
+          fail-on: high
+          slither-version: "0.11.4"
+          ignore-compile: true
+          slither-args: "--exclude-dependencies --compile-force-framework hardhat"
