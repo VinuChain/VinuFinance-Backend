@@ -226,6 +226,16 @@ async function main() {
     if (BigNumber.from(MIN_LIQUIDITY).lt(1000)) {
         throw new Error(`MIN_LIQUIDITY (${MIN_LIQUIDITY}) must be >= 1000 (BasePool.sol:136).`)
     }
+    // _minLoan > 0. The constructor does NOT validate minLoan, but minLoan == 0 BRICKS
+    // the (immutable) pool: _addLiquidity requires `totalLpShares < minLoan * BASE`
+    // (BasePool.sol:867), which with minLoan == 0 is `totalLpShares < 0` — always
+    // false — so every nonzero liquidity add reverts "Cannot add liquidity." forever.
+    if (BigNumber.from(MIN_LOAN).lte(0)) {
+        throw new Error(
+            `MIN_LOAN (${MIN_LOAN}) must be > 0: minLoan == 0 bricks the pool ` +
+                `(_addLiquidity requires totalLpShares < minLoan * BASE; BasePool.sol:867).`
+        )
+    }
     // _creatorFee <= MAX_FEE (300*10**14 = 3e16 = 0.03 * 1e18) (BasePool.sol:23,137).
     if (BigNumber.from(CREATOR_FEE).gt(BigNumber.from("30000000000000000"))) {
         throw new Error(`CREATOR_FEE (${CREATOR_FEE}) must be <= 3e16 (MAX_FEE = 300bps; BasePool.sol:137).`)

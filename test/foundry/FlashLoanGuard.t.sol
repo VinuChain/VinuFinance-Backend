@@ -93,6 +93,10 @@ contract FlashLoanGuardTest is Test {
     Forwarder aged; // an older position owned by the SAME EOA (removable)
 
     address constant EOA = address(0xE0A);
+    // A second account the attacker EOA controls; it approves the EOA to add on its
+    // behalf, so the EOA's fresh add can target HELPER's LP record (bumping only
+    // HELPER's earliestRemove) while the EOA removes its OWN aged record same-block.
+    address constant HELPER = address(0xBEEF);
 
     // 18-decimal pool params (mirrors the demo deploy.ts shape) so that loanTerms
     // yields a real, repayable loan for the amounts used below.
@@ -156,6 +160,23 @@ contract FlashLoanGuardTest is Test {
         // hold and approve the tokens). Generous supply; allowance set in ctor.
         _fund(address(fwd));
         _fund(address(aged));
+
+        // Fund the EOA directly too: test B has the EOA call the pool itself (no
+        // forwarder), so the EOA must hold the tokens and approve the pool. This is
+        // the REALISTIC normal-user case where _onBehalfOf == msg.sender == tx.origin.
+        loanCcy.mintTo(EOA, type(uint128).max);
+        collCcy.mintTo(EOA, type(uint128).max);
+        vm.startPrank(EOA, EOA);
+        loanCcy.approve(address(pool), type(uint256).max);
+        collCcy.approve(address(pool), type(uint256).max);
+        vm.stopPrank();
+
+        // HELPER approves the EOA to addLiquidity on its behalf (ApprovalTypes index 1
+        // = ADD_LIQUIDITY => bit 1<<1 = 2). The EOA's loanCcy allowance (above) funds
+        // the add since addLiquidity pulls from msg.sender (the EOA). HELPER needs no
+        // token balance for an add-on-its-behalf.
+        vm.prank(HELPER);
+        pool.setApprovals(EOA, 2);
     }
 
     function _fund(address who) internal {
@@ -185,49 +206,67 @@ contract FlashLoanGuardTest is Test {
     }
 
     /**
-     * (B) The crux of S5. One EOA holds an AGED position (added long ago, past
-     *     MIN_LPING_PERIOD, so removable now). In the SAME block it:
-     *       1. adds fresh liquidity  -> sets lastAddOfTxOrigin[EOA] = block.timestamp
-     *       2. removes the AGED position (this SUCCEEDS — earliestRemove long passed)
-     *       3. tries to borrow        -> MUST STILL revert ("Invalid operation.")
+     * (B) The crux of S5 — the REALISTIC, REACHABLE bypass keyed on tx.origin.
      *
-     *     Step 2 is a genuinely-successful removeLiquidity occurring in the same block
-     *     as the fresh add and the borrow attempt. Because the production clear was
-     *     keyed by _onBehalfOf (the aged Forwarder), it never touched the EOA's
-     *     tx.origin-keyed guard entry, so the borrow still trips the guard. This is
-     *     the reachable bypass the asymmetry could have created.
+     *     Why the naive "remove your own position right after adding to it" does NOT
+     *     work: addLiquidity sets earliestRemove = now + MIN_LPING_PERIOD on the SAME
+     *     LP record it adds to (BasePool.sol:874-875), so removing THAT record in the
+     *     same block reverts "Too early to remove." The attacker therefore splits the
+     *     fresh add and the remove across TWO LP records it controls:
      *
-     *     This PASSES today. It FAILS if removeLiquidity is wrongly changed to
-     *     `delete lastAddOfTxOrigin[tx.origin]` — then step 2 clears the EOA guard set
-     *     by step 1 and the borrow goes through. That regression is exactly what this
-     *     test pins against. (Verified by the implementer: temporarily applying the
-     *     bad re-key turns this test red.)
+     *       - EOA holds an AGED position in its OWN name (added in an earlier block,
+     *         warped past MIN_LPING_PERIOD, so removable now — its earliestRemove has
+     *         passed and is NOT bumped by a later add to a different record).
+     *       - HELPER (a second account the EOA controls) has approved the EOA to add
+     *         on its behalf.
+     *
+     *     In the SAME current block the EOA:
+     *       1. addLiquidity(_onBehalfOf = HELPER) -> sets lastAddOfTxOrigin[EOA] = now
+     *          (guard keys on tx.origin == EOA) and bumps earliestRemove for HELPER's
+     *          record only, NOT the EOA's aged record.
+     *       2. removeLiquidity(_onBehalfOf = EOA) of the EOA's OWN aged shares ->
+     *          SUCCEEDS (EOA's earliestRemove passed). Here _onBehalfOf == EOA ==
+     *          tx.origin: the original `delete lastAddOfTxOrigin[_onBehalfOf]` would
+     *          clear exactly the guard entry that borrow checks.
+     *       3. borrow(_onBehalfOf = EOA) -> MUST revert ("Invalid operation.").
+     *
+     *     With the FIXED code (no clear in removeLiquidity) the guard for EOA still
+     *     holds at step 3, so the borrow reverts — asserted here.
+     *
+     *     This test genuinely PINS S5 as a SECURITY fix: it fails BOTH against the
+     *     original `delete lastAddOfTxOrigin[_onBehalfOf]` (since _onBehalfOf == EOA
+     *     here, that delete clears the EOA's guard -> borrow would succeed = bypass)
+     *     AND against the `delete lastAddOfTxOrigin[tx.origin]` re-key. The implementer
+     *     mutation-tested both (see commit message / report): re-adding either delete
+     *     makes step 3 NOT revert.
      */
-    function test_B_sameBlock_freshAdd_removeAged_borrow_still_reverts() public {
-        // Seed an aged position for the EOA via the `aged` forwarder, long ago.
+    function test_B_sameBlock_freshAddOnBehalf_removeOwnAged_borrow_still_reverts() public {
+        // Seed an AGED position in the EOA's OWN name (EOA calls the pool directly).
         vm.startPrank(EOA, EOA);
-        aged.addLiquidity(LIQUIDITY, block.timestamp);
+        pool.addLiquidity(EOA, LIQUIDITY, block.timestamp, 0);
         vm.stopPrank();
 
-        // Advance well past MIN_LPING_PERIOD so the aged position is removable and the
-        // aged add's guard entry has expired.
+        // Advance well past MIN_LPING_PERIOD so the EOA's aged position is removable
+        // and the aged add's guard entry has naturally expired.
         vm.warp(block.timestamp + MIN_LPING_PERIOD + 1);
         vm.roll(block.number + 1);
 
-        uint128 agedShares = _lastShares(address(aged));
+        uint128 agedShares = _lastShares(EOA);
 
         vm.startPrank(EOA, EOA);
-        // 1. Fresh add: sets lastAddOfTxOrigin[EOA] = block.timestamp.
-        fwd.addLiquidity(LIQUIDITY, block.timestamp);
+        // 1. Fresh add on behalf of HELPER (a DIFFERENT LP record): sets
+        //    lastAddOfTxOrigin[EOA] = now, bumps ONLY HELPER's earliestRemove.
+        pool.addLiquidity(HELPER, LIQUIDITY, block.timestamp, 0);
 
-        // 2. Remove the AGED position in the SAME block. This SUCCEEDS (earliestRemove
-        //    for the aged position passed). With the production code its
-        //    `delete lastAddOfTxOrigin[address(aged)]` does NOT touch the EOA key.
-        aged.removeLiquidity(agedShares);
+        // 2. Remove the EOA's OWN aged shares in the SAME block. _onBehalfOf == EOA ==
+        //    tx.origin, and the EOA's earliestRemove (from the aged add) has passed, so
+        //    this SUCCEEDS. The original `delete lastAddOfTxOrigin[_onBehalfOf]` would
+        //    clear the EOA guard HERE — the reachable bypass S5 closes.
+        pool.removeLiquidity(EOA, agedShares);
 
         // 3. Borrow in the SAME block MUST STILL revert on the flash-loan guard.
         vm.expectRevert("Invalid operation.");
-        fwd.borrow(COLLATERAL, 0, type(uint128).max, block.timestamp);
+        pool.borrow(EOA, COLLATERAL, 0, type(uint128).max, block.timestamp, 0);
         vm.stopPrank();
     }
 
