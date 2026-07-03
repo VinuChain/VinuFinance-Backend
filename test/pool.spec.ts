@@ -3870,6 +3870,32 @@ describe('test BasePool', function () {
                     expect(await loanCcyTokenContract.balanceOf(charlie.address)).to.be.deep.equal('1800')
                 })
 
+                it('keeps zero-supply revenue pending until a claimable snapshot is possible', async function () {
+                    const [alice, bob] = await newUsers([[LOAN_CCY_TOKEN, 10000]], [[VOTE_TOKEN, 1000]])
+
+                    await controllerContract.connect(alice).depositRevenue(LOAN_CCY_TOKEN, '2000')
+
+                    expect(await controllerContract.currentRevenue(LOAN_CCY_TOKEN)).to.be.deep.equal('2000')
+                    expect(await controllerContract.numTokenSnapshots(LOAN_CCY_TOKEN)).to.be.deep.equal('0')
+
+                    await controllerContract.connect(bob).depositVoteToken(String(50))
+                    expect(await controllerContract.getAccountSnapshot(bob.address, 0)).to.be.deep.equal(['50', '0', '1'])
+
+                    await setTime(SNAPSHOT_TOKEN_EVERY, controllerContract)
+                    await controllerContract.connect(alice).depositRevenue(LOAN_CCY_TOKEN, '3000')
+
+                    expect(await controllerContract.currentRevenue(LOAN_CCY_TOKEN)).to.be.deep.equal('0')
+                    expect(await controllerContract.numTokenSnapshots(LOAN_CCY_TOKEN)).to.be.deep.equal('1')
+                    expect(await controllerContract.getTokenSnapshot(LOAN_CCY_TOKEN, 0)).to.be.deep.equal(['50', '5000', '0', '100', '0'])
+
+                    const before = await loanCcyTokenContract.balanceOf(bob.address)
+                    await controllerContract.connect(bob).claimToken(LOAN_CCY_TOKEN, 0, 0)
+                    const after = await loanCcyTokenContract.balanceOf(bob.address)
+
+                    expect(after.sub(before)).to.be.deep.equal(BigNumber.from('5000'))
+                    expect(await controllerContract.getTokenSnapshot(LOAN_CCY_TOKEN, 0)).to.be.deep.equal(['50', '5000', '5000', '100', '0'])
+                })
+
                 it('claims individually for multiple snapshots', async function () {
                     const [alice, bob, charlie] = await newUsers([[LOAN_CCY_TOKEN, 10000]], [[VOTE_TOKEN, 1000]], [[VOTE_TOKEN, 1000]])
 
@@ -4089,17 +4115,17 @@ describe('test BasePool', function () {
                     // v: deposit vote token
                     // |: increase the time
 
-                    const setups = [
-                        ['rvv|vv', -1],
-                        ['vrv|vv', 0],
-                        ['vvr|vv', 1],
-                        ['vv|rvv', 1],
-                        ['vv|vrv', 2],
-                        ['vv|vvr', 3]
+                    const setups: Array<[string, number, string]> = [
+                        ['rvv|vv', -1, 'Invalid token snapshot idx.'],
+                        ['vrv|vv', 0, 'Incorrect account snapshot idx.'],
+                        ['vvr|vv', 1, 'Incorrect account snapshot idx.'],
+                        ['vv|rvv', 1, 'Incorrect account snapshot idx.'],
+                        ['vv|vrv', 2, 'Incorrect account snapshot idx.'],
+                        ['vv|vvr', 3, 'Incorrect account snapshot idx.']
                     ]
 
                     for (const setup of setups) {
-                        const [actions, correctIndex] = setup
+                        const [actions, correctIndex, failureMessage] = setup
 
                         it('tests with ' + actions, async function () {
                             const [alice, bob] = await newUsers([[LOAN_CCY_TOKEN, 10000]], [[VOTE_TOKEN, 1000]])
@@ -4121,7 +4147,7 @@ describe('test BasePool', function () {
                                     console.log('Testing failure with', i)
                                     await expect(
                                         controllerContract.connect(bob).claimToken(LOAN_CCY_TOKEN, 0, i)
-                                    ).to.be.revertedWith('Incorrect account snapshot idx.')
+                                    ).to.be.revertedWith(failureMessage)
                                 }
                             }
 
@@ -6184,9 +6210,10 @@ describe('test BasePool', function () {
             await setTime(0)
             await setTime(0, controllerContract)
 
-            const [alice, bob] = await newUsers(
+            const [alice, bob, voter] = await newUsers(
                 [ [LOAN_CCY_TOKEN, 8000] ],
-                [ [LOAN_CCY_TOKEN, 10000], [COLL_CCY_TOKEN, 8000] ])
+                [ [LOAN_CCY_TOKEN, 10000], [COLL_CCY_TOKEN, 8000] ],
+                [ [VOTE_TOKEN, 1000] ])
 
             const liquidity = 8000
             const collateralPledge = 1245
@@ -6206,8 +6233,20 @@ describe('test BasePool', function () {
                     0 // referralCode
                 )
 
+            await checkQuery('numTokenSnapshots', [COLL_CCY_TOKEN], [0], controllerContract)
+            await checkQuery('currentRevenue', [COLL_CCY_TOKEN], [creatorFee], controllerContract)
+
+            await controllerContract.connect(voter).depositVoteToken(String(100))
+            await setTime(101, controllerContract)
+            await controllerContract.connect(voter).forceTokenSnapshotCheck(COLL_CCY_TOKEN)
+
             await checkQuery('numTokenSnapshots', [COLL_CCY_TOKEN], [1], controllerContract)
-            await checkQuery('getTokenSnapshot', [COLL_CCY_TOKEN, 0], [0, creatorFee, 0, 1, 0], controllerContract)
+            await checkQuery('getTokenSnapshot', [COLL_CCY_TOKEN, 0], [100, creatorFee, 0, 101, 0], controllerContract)
+
+            const beforeClaim = await collCcyTokenContract.balanceOf(voter.address)
+            await controllerContract.connect(voter).claimToken(COLL_CCY_TOKEN, 0, 0)
+            const afterClaim = await collCcyTokenContract.balanceOf(voter.address)
+            expect(afterClaim.sub(beforeClaim)).to.be.deep.equal(BigNumber.from(creatorFee))
         })
     })
 
