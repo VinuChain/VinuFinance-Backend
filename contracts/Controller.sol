@@ -371,6 +371,11 @@ contract Controller is IController {
             // Enough time has passed
             block.timestamp >= tokenSnapshots[_token][newSnapshotIdx - 1].timestamp + snapshotTokenEvery
         ) {
+            if (voteTokenTotalSupply == 0) {
+                subTimestampCounter[block.timestamp]++;
+                return;
+            }
+
             // Take snapshot
             tokenSnapshots[_token][newSnapshotIdx].voteTokenTotalSupply = voteTokenTotalSupply;
             tokenSnapshots[_token][newSnapshotIdx].timestamp = block.timestamp;
