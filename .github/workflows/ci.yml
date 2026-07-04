@@ -32,9 +32,9 @@ jobs:
       matrix:
         reward_coefficient: ["0", "1000000000000000"] # 0 and 1e15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "18"
 
@@ -53,12 +53,12 @@ jobs:
     name: foundry-reward-invariants
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "18"
 
@@ -85,8 +85,8 @@ jobs:
     name: slither-static-analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: "18"
       - name: Install node dependencies (for OpenZeppelin imports)
