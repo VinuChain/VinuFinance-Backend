@@ -18,6 +18,8 @@ let controllerContractBlueprint : hre.ethers.ContractFactory
 let contractBlueprint: ethers.ContractFactory
 let multiclaimContractBlueprint: ethers.ContractFactory
 let emergencyWithdrawalContractBlueprint: ethers.ContractFactory
+let feeOnTransferTokenBlueprint: ethers.ContractFactory
+let reentrantRevenueTokenBlueprint: ethers.ContractFactory
 
 let controllerContract : any;
 let contract: any;
@@ -210,6 +212,8 @@ describe('test BasePool', function () {
         deployer = a
 
         const erc20Blueprint = await hre.ethers.getContractFactory('MockERC20')
+        feeOnTransferTokenBlueprint = await hre.ethers.getContractFactory('FeeOnTransferMockERC20')
+        reentrantRevenueTokenBlueprint = await hre.ethers.getContractFactory('ReentrantRevenueMockERC20')
 
         loanCcyTokenContract = await erc20Blueprint.deploy()
         LOAN_CCY_TOKEN = loanCcyTokenContract.address
@@ -3656,6 +3660,65 @@ describe('test BasePool', function () {
                     expect(await controllerContract.currentRevenue(COLL_CCY_TOKEN)).to.be.deep.equal('0')
                     expect(await controllerContract.numTokenSnapshots(COLL_CCY_TOKEN)).to.be.deep.equal('1')
                     expect(await controllerContract.getTokenSnapshot(COLL_CCY_TOKEN, 0)).to.be.deep.equal(['50', '100', '0', '19', '1'])
+                })
+
+                it('accounts transfer-fee revenue by actual tokens received', async function () {
+                    const [alice] = await newUsers([ [VOTE_TOKEN, 1000] ])
+                    const feeTokenContract = await feeOnTransferTokenBlueprint.deploy()
+
+                    await feeTokenContract.connect(alice).mint('100')
+                    await feeTokenContract.connect(alice).approve(controllerContract.address, '100')
+                    await setTime(19, controllerContract)
+                    await controllerContract.connect(alice).depositVoteToken(String(50))
+
+                    await controllerContract.connect(alice).depositRevenue(feeTokenContract.address, '100')
+
+                    expect(await feeTokenContract.balanceOf(controllerContract.address)).to.be.deep.equal('90')
+                    expect(await controllerContract.numTokenSnapshots(feeTokenContract.address)).to.be.deep.equal('1')
+                    expect(await controllerContract.getTokenSnapshot(feeTokenContract.address, 0)).to.be.deep.equal(['50', '90', '0', '19', '1'])
+
+                    const balanceBeforeClaim = await feeTokenContract.balanceOf(alice.address)
+                    await controllerContract.connect(alice).claimToken(feeTokenContract.address, 0, 0)
+                    const balanceAfterClaim = await feeTokenContract.balanceOf(alice.address)
+
+                    expect(balanceAfterClaim.sub(balanceBeforeClaim).toString()).to.be.equal('81')
+                    expect(await controllerContract.getTokenSnapshot(feeTokenContract.address, 0)).to.be.deep.equal(['50', '90', '90', '19', '1'])
+                    expect(await feeTokenContract.balanceOf(controllerContract.address)).to.be.deep.equal('0')
+                })
+
+                it('rejects reentrant revenue deposits during token transfer', async function () {
+                    const [alice] = await newUsers([ [VOTE_TOKEN, 1000] ])
+                    const reentrantTokenContract = await reentrantRevenueTokenBlueprint.deploy()
+
+                    await reentrantTokenContract.connect(alice).mint('100')
+                    await reentrantTokenContract.fundReentrantBalance('10')
+                    await reentrantTokenContract.configureReentry(controllerContract.address, '10')
+                    await reentrantTokenContract.setReenter(true)
+                    await reentrantTokenContract.connect(alice).approve(controllerContract.address, '100')
+                    await setTime(19, controllerContract)
+                    await controllerContract.connect(alice).depositVoteToken(String(50))
+
+                    await expect(
+                        controllerContract.connect(alice).depositRevenue(reentrantTokenContract.address, '100')
+                    ).to.be.revertedWith('ReentrancyGuard: reentrant call')
+                })
+
+                it('rejects reentrant snapshot checks during revenue transfer', async function () {
+                    const [alice] = await newUsers([ [VOTE_TOKEN, 1000] ])
+                    const reentrantTokenContract = await reentrantRevenueTokenBlueprint.deploy()
+
+                    await reentrantTokenContract.connect(alice).mint('100')
+                    await reentrantTokenContract.configureReentry(controllerContract.address, '0')
+                    await reentrantTokenContract.setForceSnapshot(true)
+                    await reentrantTokenContract.setReenter(true)
+                    await reentrantTokenContract.connect(alice).approve(controllerContract.address, '100')
+                    await setTime(19, controllerContract)
+                    await controllerContract.connect(alice).depositVoteToken(String(50))
+
+                    await expect(
+                        controllerContract.connect(alice).depositRevenue(reentrantTokenContract.address, '100')
+                    ).to.be.revertedWith('ReentrancyGuard: reentrant call')
+                    expect(await controllerContract.numTokenSnapshots(reentrantTokenContract.address)).to.be.deep.equal('0')
                 })
 
                 it('takes only one snapshot despite multiple revenue deposits', async function () {

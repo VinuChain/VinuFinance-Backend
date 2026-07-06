@@ -4,9 +4,10 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./interfaces/IController.sol";
 
-contract Controller is IController {
+contract Controller is IController, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // Threshold base value for voting
@@ -130,11 +131,13 @@ contract Controller is IController {
     /**
      * @inheritdoc IController
      */
-    function depositRevenue(IERC20 _token, uint256 _amount) override external payable {
-        currentRevenue[_token] += _amount;
-        _checkTokenSnapshot(_token);
-
+    function depositRevenue(IERC20 _token, uint256 _amount) external payable override nonReentrant {
+        uint256 balanceBefore = _token.balanceOf(address(this));
         _token.safeTransferFrom(msg.sender, address(this), _amount);
+        uint256 received = _token.balanceOf(address(this)) - balanceBefore;
+
+        currentRevenue[_token] += received;
+        _checkTokenSnapshot(_token);
     }
 
     /**
@@ -316,7 +319,7 @@ contract Controller is IController {
      *
      * @param _amount Amount to deposit
      */
-    function depositVoteToken(uint256 _amount) external payable {
+    function depositVoteToken(uint256 _amount) external payable nonReentrant {
         _depositVoteToken(msg.sender, _amount);
 
         voteToken.safeTransferFrom(msg.sender, address(this), _amount);
@@ -327,7 +330,7 @@ contract Controller is IController {
      *
      * @param _amount Amount of tokens to withdraw
      */
-    function withdrawVoteToken(uint256 _amount) external {
+    function withdrawVoteToken(uint256 _amount) external nonReentrant {
         require(_amount > 0, "Cannot make a zero-value withdraw.");
         require(numVotings[msg.sender] == 0, "Cannot withdraw when votes are active.");
         require(_amount <= voteTokenBalance[msg.sender], "Not enough tokens.");
@@ -355,7 +358,7 @@ contract Controller is IController {
      *
      * @param _token Token to take a snapshot of
      */
-    function forceTokenSnapshotCheck(IERC20 _token) external {
+    function forceTokenSnapshotCheck(IERC20 _token) external nonReentrant {
         _checkTokenSnapshot(_token);
     }
 
@@ -501,7 +504,7 @@ contract Controller is IController {
      * @param _tokenSnapshotIdx Index of the token snapshot
      * @param _accountSnapshotIdx Index of the account snapshot
      */
-    function claimToken(IERC20 _token, uint256 _tokenSnapshotIdx, uint256 _accountSnapshotIdx) public {
+    function claimToken(IERC20 _token, uint256 _tokenSnapshotIdx, uint256 _accountSnapshotIdx) public nonReentrant {
         require(_accountSnapshotIdx < numAccountSnapshots[msg.sender], "Invalid account snapshot idx.");
         require(_tokenSnapshotIdx < numTokenSnapshots[_token], "Invalid token snapshot idx.");
 
@@ -569,7 +572,7 @@ contract Controller is IController {
     /**
      * @notice Deposits the tokens that will be used as reward
      */
-    function depositRewardSupply(uint256 _amount) payable external {
+    function depositRewardSupply(uint256 _amount) payable external nonReentrant {
         rewardSupply += _amount;
 
         voteToken.safeTransferFrom(msg.sender, address(this), _amount);
@@ -609,7 +612,7 @@ contract Controller is IController {
      * @param _deposit Whether to deposit the reward in the vote token balance
      *                 or to transfer it to the caller
      */
-    function collectReward(bool _deposit) external {
+    function collectReward(bool _deposit) external nonReentrant {
         require(rewardBalance[msg.sender] > 0, "No reward to collect.");
 
         uint256 amount = rewardBalance[msg.sender];
