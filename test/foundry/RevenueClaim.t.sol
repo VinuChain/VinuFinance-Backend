@@ -113,7 +113,8 @@ contract RevenueClaimTest is Test {
         uint256 paid = feeToken.balanceOf(alice) - before;
 
         assertEq(paid, 81, "claim transfer applies the token fee once");
-        (, collected, uint256 claimed, , ) = controller.getTokenSnapshot(IERC20(address(feeToken)), 0);
+        (, uint256 collectedAfterClaim, uint256 claimed, , ) = controller.getTokenSnapshot(IERC20(address(feeToken)), 0);
+        assertEq(collectedAfterClaim, 90, "collected accounting should stay at net deposit");
         assertEq(claimed, 90, "claimed accounting should settle the gross net deposit");
         assertEq(feeToken.balanceOf(address(controller)), 0, "controller should not retain revenue dust");
     }
