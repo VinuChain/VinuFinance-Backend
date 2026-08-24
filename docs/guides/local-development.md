@@ -30,7 +30,7 @@ Create a `.env` file in the project root:
 ```bash
 # Network RPC URLs
 VINUCHAIN_RPC_URL=https://rpc.vinuchain.org
-TESTNET_RPC_URL=https://testnet-rpc.com
+TESTNET_RPC_URL=https://vinufoundation-rpc.com
 
 # Private key for deployment (without 0x prefix)
 PRIVATE_KEY=your_private_key_here
