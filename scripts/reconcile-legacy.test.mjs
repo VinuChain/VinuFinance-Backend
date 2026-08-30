@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, keccak256, loadManifest, readNewSubPoolEvents, resolveReadTag, safeRpcOrigin, validateManifest } from "./reconcile-legacy.mjs";
+import { ADD_LIQUIDITY_TOPIC, LP_INTERFACE, NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, decodeLpOwners, keccak256, loadManifest, lpEntitlement, readLpOwnerEvents, readNewSubPoolEvents, resolveReadTag, safeRpcOrigin, validateManifest } from "./reconcile-legacy.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = validateManifest(loadManifest(resolve(root, "deployments/vinuchain-legacy.json")));
@@ -40,6 +40,10 @@ assert.equal(manifest.contracts.controller.address.toLowerCase(), "0x17ba239f281
 assert.equal(manifest.observedLoans.find((loan) => loan.pool.toLowerCase() === "0xb8f54383b78fab60d2ecedc59b5cde9a6ae655d1" && loan.loanIdx === 1).borrower, "0x9ceaab056d465812c9e0edce6f0f24f4d99ee79a");
 assert.equal(safeRpcOrigin("https://rpc-user:rpc-password@rpc.vinuchain.org/private/secret?api_key=query-secret#fragment-secret"), "https://rpc.vinuchain.org");
 assert.ok(readFileSync(resolve(root, "deployments/vinuchain-legacy.json"), "utf8").includes("Panic(0x11)"));
+assert.equal(lpEntitlement(10_000n, 1_000n, 10n, 3n), 2_700n);
+assert.equal(lpEntitlement(1_000n, 1_000n, 0n, 0n), 0n);
+assert.equal(lpEntitlement(999n, 1_000n, 0n, 0n), 0n);
+assert.throws(() => lpEntitlement(999n, 1_000n, 1n, 1n), /reserved minimum/);
 
 const eventLogs = manifest.pools.map((pool) => {
   const encoded = NEW_SUB_POOL_INTERFACE.encodeEventLog(NEW_SUB_POOL_INTERFACE.getEvent("NewSubPool"), [
@@ -107,5 +111,46 @@ const unexpectedReport = await readNewSubPoolEvents(unexpectedRpc, manifest, "0x
 assert.equal(unexpectedReport.records.length, 11);
 assert.ok(unexpectedFindings.some((finding) => finding.code === "UNEXPECTED_NEW_SUBPOOL"));
 assert.ok(unexpectedFindings.some((finding) => finding.code === "NEW_SUBPOOL_INVENTORY_MISMATCH"));
+
+const lpOwner = "0x00000000000000000000000000000000000000a1";
+const addEncoded = LP_INTERFACE.encodeEventLog(LP_INTERFACE.getEvent("AddLiquidity"), [
+  lpOwner,
+  10_000,
+  2_000,
+  10_000,
+  2_000,
+  100,
+  1,
+  0,
+]);
+const addLog = {
+  address: manifest.pools[0].address,
+  blockNumber: "0x20000",
+  transactionHash: `0x${"11".repeat(32)}`,
+  topics: addEncoded.topics,
+  data: addEncoded.data,
+};
+const lpDecodeFindings = [];
+const decodedOwners = decodeLpOwners([addLog, addLog], manifest, lpDecodeFindings);
+assert.equal(lpDecodeFindings.length, 0);
+assert.equal(decodedOwners.records, 2);
+assert.deepEqual([...decodedOwners.owners.get(manifest.pools[0].address.toLowerCase())], [lpOwner]);
+
+const lpRequests = [];
+const lpEventRpc = {
+  async request(method, params) {
+    assert.equal(method, "eth_getLogs");
+    lpRequests.push(params[0]);
+    return params[0].fromBlock === "0x186a0" ? [addLog] : [];
+  },
+};
+const lpEventFindings = [];
+const lpEventReport = await readLpOwnerEvents(lpEventRpc, manifest, "0x80000", lpEventFindings);
+assert.equal(lpEventFindings.length, 0);
+assert.equal(lpEventReport.records, 1);
+assert.equal(lpEventReport.chunks, 5);
+assert.ok(lpRequests.every((request) => request.topics[0] === ADD_LIQUIDITY_TOPIC));
+assert.ok(lpRequests.every((request) => request.address.length === 10));
+assert.ok(lpRequests.every((request) => request.toBlock !== "latest"));
 
 console.log(`reconcile-legacy self-test passed: ${manifest.pools.length} pools, ${usdtPools.length} USDT pools, ${decimalMismatches.length} declared/token decimal mismatches`);

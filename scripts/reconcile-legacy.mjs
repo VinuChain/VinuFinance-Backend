@@ -25,6 +25,11 @@ const NEW_SUB_POOL_INTERFACE = new ethersUtils.Interface([
   "event NewSubPool(address loanCcyToken,address collCcyToken,uint256 loanTenor,uint256 maxLoanPerColl,uint256 r1,uint256 r2,uint256 liquidityBnd1,uint256 liquidityBnd2,uint256 minLoan,uint256 creatorFee,address poolController,uint96 rewardCoefficient)",
 ]);
 const NEW_SUB_POOL_TOPIC = NEW_SUB_POOL_INTERFACE.getEventTopic("NewSubPool");
+const LP_INTERFACE = new ethersUtils.Interface([
+  "event AddLiquidity(address indexed lp,uint256 amount,uint256 newLpShares,uint256 totalLiquidity,uint256 totalLpShares,uint256 earliestRemove,uint256 indexed loanIdx,uint256 indexed referralCode)",
+  "function getLpInfo(address) view returns (uint32 fromLoanIdx,uint32 earliestRemove,uint32 currSharePtr,uint256[] sharesOverTime,uint256[] loanIdxsWhereSharesChanged)",
+]);
+const ADD_LIQUIDITY_TOPIC = LP_INTERFACE.getEventTopic("AddLiquidity");
 
 function keccak256(input) {
   return ethersUtils.keccak256(input);
@@ -331,6 +336,186 @@ async function readNewSubPoolEvents(rpc, manifest, toBlockHex, findings) {
   };
 }
 
+function decodeLpOwners(logs, manifest, findings) {
+  const expectedPools = new Map(manifest.pools.map((pool) => [pool.address.toLowerCase(), pool]));
+  const owners = new Map(manifest.pools.map((pool) => [pool.address.toLowerCase(), new Set()]));
+  let records = 0;
+  for (const log of logs) {
+    const poolAddress = String(log.address).toLowerCase();
+    const pool = expectedPools.get(poolAddress);
+    if (!pool) {
+      addFinding(findings, "error", "UNEXPECTED_LP_EVENT_POOL", `lpEvents.${poolAddress}`, "manifest pool", poolAddress);
+      continue;
+    }
+    try {
+      const parsed = LP_INTERFACE.parseLog({ topics: log.topics, data: log.data });
+      const owner = String(parsed.args.lp).toLowerCase();
+      if (!ADDRESS_RE.test(owner)) throw new Error("invalid LP address");
+      owners.get(poolAddress).add(owner);
+      records += 1;
+    } catch (error) {
+      addFinding(findings, "error", "LP_EVENT_DECODE_FAILED", `lpEvents.${pool.id}`, "AddLiquidity ABI", error.message);
+    }
+  }
+  return { owners, records };
+}
+
+async function readLpOwnerEvents(rpc, manifest, toBlockHex, findings) {
+  const fromBlock = BigInt(manifest.network.eventScanStartBlock);
+  const toBlock = BigInt(toBlockHex);
+  if (fromBlock > toBlock) {
+    addFinding(findings, "error", "LP_EVENT_SCAN_RANGE_INVALID", "lpEvents.range", `<= ${toBlock}`, fromBlock);
+    return { fromBlock: Number(fromBlock), toBlock: Number(toBlock), chunkSize: EVENT_CHUNK_SIZE, chunks: 0, records: 0, owners: new Map() };
+  }
+
+  const logs = [];
+  let chunks = 0;
+  for (let start = fromBlock; start <= toBlock; start += BigInt(EVENT_CHUNK_SIZE)) {
+    chunks += 1;
+    if (chunks > MAX_EVENT_CHUNKS) {
+      addFinding(findings, "error", "LP_EVENT_SCAN_CAP_EXCEEDED", "lpEvents.chunks", `<= ${MAX_EVENT_CHUNKS}`, chunks);
+      break;
+    }
+    const end = start + BigInt(EVENT_CHUNK_SIZE - 1) < toBlock ? start + BigInt(EVENT_CHUNK_SIZE - 1) : toBlock;
+    const result = await rpc.request("eth_getLogs", [{
+      address: manifest.pools.map((pool) => pool.address),
+      fromBlock: blockTag(start.toString()),
+      toBlock: blockTag(end.toString()),
+      topics: [ADD_LIQUIDITY_TOPIC],
+    }]);
+    if (!Array.isArray(result)) throw new Error("eth_getLogs returned a non-array LP event response");
+    logs.push(...result);
+  }
+  return {
+    fromBlock: Number(fromBlock),
+    toBlock: Number(toBlock),
+    chunkSize: EVENT_CHUNK_SIZE,
+    chunks,
+    topic: ADD_LIQUIDITY_TOPIC,
+    ...decodeLpOwners(logs, manifest, findings),
+  };
+}
+
+function lpEntitlement(totalLiquidity, minLiquidity, totalLpShares, currentShares) {
+  if (currentShares < 0n || totalLpShares < 0n || currentShares > totalLpShares) throw new Error("LP shares are outside the pool total");
+  if (totalLpShares === 0n) {
+    if (currentShares !== 0n) throw new Error("nonzero LP shares with zero pool share supply");
+    return 0n;
+  }
+  if (totalLiquidity < minLiquidity) throw new Error("pool liquidity is below its reserved minimum");
+  return ((totalLiquidity - minLiquidity) * currentShares) / totalLpShares;
+}
+
+async function readLpPositions(rpc, manifest, poolReports, tag, blockTimestamp, toBlockHex, findings) {
+  const eventReport = await readLpOwnerEvents(rpc, manifest, toBlockHex, findings);
+  const reportsByAddress = new Map(poolReports.map((pool) => [pool.address.toLowerCase(), pool]));
+  const byPool = [];
+  const historicalOwnerSet = new Set();
+  let currentPositions = 0;
+
+  for (const pool of manifest.pools) {
+    const address = pool.address.toLowerCase();
+    const poolReport = reportsByAddress.get(address);
+    const historicalOwners = [...(eventReport.owners.get(address) ?? [])].sort();
+    historicalOwners.forEach((owner) => historicalOwnerSet.add(owner));
+    const positions = [];
+    let observedShares = 0n;
+    let observedEntitlement = 0n;
+
+    for (const owner of historicalOwners) {
+      const data = await readCall(rpc, pool.address, "getLpInfo(address)", [{ type: "address", value: owner }], tag);
+      const decoded = LP_INTERFACE.decodeFunctionResult("getLpInfo", data);
+      const sharesOverTime = decoded.sharesOverTime.map((value) => BigInt(value.toString()));
+      const currentShares = sharesOverTime.length ? sharesOverTime[sharesOverTime.length - 1] : 0n;
+      if (currentShares === 0n) continue;
+
+      const fromLoanIdx = BigInt(decoded.fromLoanIdx.toString());
+      const earliestRemove = BigInt(decoded.earliestRemove.toString());
+      const lastTrackedLiquidity = await readUint(rpc, pool.address, "lastTrackedLiquidity(address)", [{ type: "address", value: owner }], tag);
+      let entitlement = 0n;
+      try {
+        entitlement = lpEntitlement(
+          BigInt(poolReport.config.totalLiquidity),
+          BigInt(poolReport.config.minLiquidity),
+          BigInt(poolReport.config.totalLpShares),
+          currentShares,
+        );
+      } catch (error) {
+        addFinding(findings, "error", "LP_ENTITLEMENT_INVALID", `${pool.id}.${owner}`, "valid pro-rata position", error.message);
+      }
+
+      let fullExit = { status: "TIMELOCKED", error: undefined };
+      if (blockTimestamp >= earliestRemove) {
+        try {
+          await rpc.request("eth_call", [{
+            from: owner,
+            to: pool.address,
+            data: callData("removeLiquidity(address,uint128)", [
+              { type: "address", value: owner },
+              { type: "uint128", value: currentShares },
+            ]),
+          }, tag]);
+          fullExit = { status: "SUCCESS", error: undefined };
+        } catch (error) {
+          fullExit = { status: "REVERTED", error: error.message };
+          addFinding(findings, "error", "FULL_EXIT_SIMULATION_FAILED", `${pool.id}.${owner}`, "successful owner full exit", error.message);
+        }
+      }
+
+      observedShares += currentShares;
+      observedEntitlement += entitlement;
+      currentPositions += 1;
+      positions.push({
+        owner,
+        currentShares: currentShares.toString(),
+        lastTrackedLiquidity: lastTrackedLiquidity.toString(),
+        entitlement: entitlement.toString(),
+        fromLoanIdx: fromLoanIdx.toString(),
+        nextLoanIdx: String(poolReport.config.nextLoanIdx),
+        claimPrefixEmpty: fromLoanIdx === BigInt(poolReport.config.nextLoanIdx),
+        earliestRemove: earliestRemove.toString(),
+        fullExit,
+      });
+    }
+
+    const totalLpShares = BigInt(poolReport.config.totalLpShares);
+    compare(findings, `${pool.id}.lpPositions.currentShares`, totalLpShares, observedShares, "LP_SHARE_RECONCILIATION_MISMATCH");
+    const availableLiquidity = totalLpShares === 0n
+      ? 0n
+      : BigInt(poolReport.config.totalLiquidity) - BigInt(poolReport.config.minLiquidity);
+    const roundingResidual = availableLiquidity - observedEntitlement;
+    if (roundingResidual < 0n || roundingResidual > BigInt(positions.length)) {
+      addFinding(findings, "error", "LP_ENTITLEMENT_RECONCILIATION_MISMATCH", `${pool.id}.lpPositions.entitlement`, `rounding residual 0..${positions.length}`, roundingResidual);
+    }
+    byPool.push({
+      id: pool.id,
+      address: pool.address,
+      historicalOwners: historicalOwners.length,
+      currentPositions: positions.length,
+      observedShares: observedShares.toString(),
+      totalLpShares: totalLpShares.toString(),
+      observedEntitlement: observedEntitlement.toString(),
+      availableLiquidity: availableLiquidity.toString(),
+      roundingResidual: roundingResidual.toString(),
+      positions,
+    });
+  }
+
+  return {
+    events: {
+      fromBlock: eventReport.fromBlock,
+      toBlock: eventReport.toBlock,
+      chunkSize: eventReport.chunkSize,
+      chunks: eventReport.chunks,
+      topic: eventReport.topic,
+      records: eventReport.records,
+    },
+    historicalOwners: historicalOwnerSet.size,
+    currentPositions,
+    pools: byPool,
+  };
+}
+
 async function readPool(rpc, pool, manifest, tag, blockTimestamp, maxLoans, findings) {
   const [poolInfoData, rateData, minLiquidity, collateralDecimals, paused, loanCode] = await Promise.all([
     readCall(rpc, pool.address, "getPoolInfo()", [], tag),
@@ -469,6 +654,7 @@ function display(report) {
   const { summary } = report;
   console.log(`VinuChain legacy reconciliation: ${summary.status} at block ${report.block.number}`);
   console.log(`RPC chain ${report.rpc.chainId}; pools ${summary.pools}/${report.pools.length}; errors ${summary.errors}; warnings ${summary.warnings}`);
+  console.log(`LP inventory ${report.lpPositions.historicalOwners} historical owners; ${report.lpPositions.currentPositions} current positions`);
   for (const finding of report.findings) console.log(`${finding.severity.toUpperCase()} ${finding.code} ${finding.scope}`);
   console.log(jsonStringify(report, 2));
 }
@@ -492,7 +678,7 @@ Options:
 Exit codes: 0 healthy, 2 reconciled but degraded by known legacy risks, 1 RPC or accounting mismatch.`);
 }
 
-export { NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, keccak256, loadManifest, readNewSubPoolEvents, resolveReadTag, safeRpcOrigin, validateManifest };
+export { ADD_LIQUIDITY_TOPIC, LP_INTERFACE, NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, decodeLpOwners, keccak256, loadManifest, lpEntitlement, readLpOwnerEvents, readNewSubPoolEvents, resolveReadTag, safeRpcOrigin, validateManifest };
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
@@ -573,6 +759,7 @@ export async function main(argv = process.argv.slice(2)) {
   const pools = [];
   for (const pool of manifest.pools) pools.push(await readPool(rpc, pool, manifest, callTag, blockTimestamp, maxLoans, findings));
   const events = await readNewSubPoolEvents(rpc, manifest, blockNumberHex, findings);
+  const lpPositions = await readLpPositions(rpc, manifest, pools, callTag, blockTimestamp, blockNumberHex, findings);
   const knownRiskCodes = new Set(findings.filter((finding) => finding.severity === "warning").map((finding) => finding.code));
   const errors = findings.filter((finding) => finding.severity === "error").length;
   const warnings = findings.filter((finding) => finding.severity === "warning").length;
@@ -586,9 +773,10 @@ export async function main(argv = process.argv.slice(2)) {
     controller: controllerState,
     pools,
     events,
+    lpPositions,
     findings,
     knownRisks: manifest.knownRisks,
-    summary: { status, pools: pools.length, errors, warnings, knownRiskCodes: [...knownRiskCodes] },
+    summary: { status, pools: pools.length, currentLpPositions: lpPositions.currentPositions, errors, warnings, knownRiskCodes: [...knownRiskCodes] },
   };
   if (args.json) console.log(jsonStringify(report));
   else display(report);
