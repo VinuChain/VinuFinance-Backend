@@ -76,6 +76,12 @@ function blockTag(value) {
   return `0x${BigInt(value).toString(16)}`;
 }
 
+function resolveReadTag(requestedBlock, resolvedBlock) {
+  const selected = requestedBlock === undefined ? resolvedBlock : blockTag(requestedBlock);
+  if (selected === "latest") throw new Error("Read tag must be a resolved block number");
+  return selected;
+}
+
 function parseArgs(argv) {
   const args = { json: false, manifest: DEFAULT_MANIFEST };
   for (let index = 0; index < argv.length; index += 1) {
@@ -347,7 +353,7 @@ Options:
 Exit codes: 0 healthy, 2 reconciled but degraded by known legacy risks, 1 RPC or accounting mismatch.`);
 }
 
-export { keccak256, loadManifest, validateManifest };
+export { keccak256, loadManifest, validateManifest, resolveReadTag };
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
@@ -364,7 +370,9 @@ export async function main(argv = process.argv.slice(2)) {
     for (const fork of ["Shanghai", "Cancun", "Prague", "VinuLatestEVM"]) {
       if (manifest.network.forkRulesAtObservation?.[fork] !== true) throw new Error(`Manifest fork rule ${fork} is not pinned true`);
     }
-    if (manifest.pools.filter((pool) => pool.collateralToken === "usdt").length !== 6) throw new Error("Manifest must identify six USDT-collateral pools");
+    const usdtPools = manifest.pools.filter((pool) => pool.collateralToken === "usdt");
+    if (usdtPools.length !== 6) throw new Error("Manifest must identify six USDT-collateral pools");
+    if (usdtPools.filter((pool) => pool.declaredCollateralDecimals !== manifest.tokens[pool.collateralToken].decimals).length !== 2) throw new Error("Manifest must identify two declared/token decimal mismatches");
     if (manifest.pools.some((pool) => pool.sourceVerification !== "NONE")) throw new Error("Legacy pool source verification must not be claimed");
     const result = { status: "PASS", manifest: args.manifest, pools: manifest.pools.length, keccak: "PASS" };
     if (args.json) console.log(jsonStringify(result));
@@ -384,7 +392,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (!block) throw new Error(`Block not found: ${blockNumberHex}`);
   const blockNumber = Number(BigInt(block.number));
   const blockTimestamp = BigInt(block.timestamp);
-  const callTag = args.block === undefined ? "latest" : tag;
+  // Resolve the head once so all reads in this report describe one chain state.
+  const callTag = resolveReadTag(args.block, blockNumberHex);
   const runtime = {};
   for (const [key, item] of Object.entries(manifest.contracts)) runtime[key] = await readRuntime(rpc, item, `contracts.${key}`, callTag, findings);
   const tokens = {};
