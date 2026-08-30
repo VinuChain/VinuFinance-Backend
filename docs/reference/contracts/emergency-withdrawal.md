@@ -107,6 +107,10 @@ function collectEmergency(
 
 Withdraws the user's currently removable LP liquidity and sends it to the original user; unsettled or remaining claims are handled separately.
 
+The helper reads `BasePool.getCurrentLpShares()` rather than copying the LP's
+full share history, so an attacker-grown history does not make an emergency
+exit's entitlement lookup scale with array length.
+
 **Parameters:**
 
 | Name | Type | Description |

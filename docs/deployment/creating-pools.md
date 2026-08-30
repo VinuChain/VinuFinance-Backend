@@ -118,6 +118,12 @@ const liquidityBnd2 = ethers.utils.parseUnits("100000", 6); // 100k USDT
 - 10k–100k: rate interpolates linearly between r1 (at 10k) and r2 (at 100k)
 - Above 100k: rate stays constant at the minimum, r2
 
+The constructor rejects a rate domain whose low-liquidity peak could make the
+minimum valid loan's repayment exceed the `uint128` loan accounting field.
+With `U = 2^128 - 1`, the exact peak-rate ceiling is
+`floor(((U - minLoan + 1) × BASE - 1) / minLoan)`; configure `r1 × bnd1`
+at or below that ceiling.
+
 ### Fee Parameters
 
 | Parameter | Type | Description | Max |
@@ -288,6 +294,9 @@ require(_loanTenor >= MIN_TENOR, "Loam tenor must be at least MIN_TENOR.");
 // rate params: r1 must be strictly greater than r2, and r2 must be non-zero
 if (_rs[0] <= _rs[1] || _rs[1] == 0) revert("Invalid rate parameters.");
 if (_liquidityBnds[1] <= _liquidityBnds[0] || _liquidityBnds[0] == 0) revert("Invalid liquidity bounds");
+// peak low-liquidity rate must keep the minimum repayment within uint128
+uint256 maxRate = ((type(uint128).max - _minLoan + 1) * BASE - 1) / _minLoan;
+require(_rs[0] <= maxRate / _liquidityBnds[0], "Rate parameters too large.");
 require(_minLiquidity >= 1000, "Min liquidity must be at least 1000.");
 require(_creatorFee <= MAX_FEE, "Creator fee too high.");
 ```

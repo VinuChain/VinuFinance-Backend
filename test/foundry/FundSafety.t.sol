@@ -566,6 +566,48 @@ contract FundSafetyTest is Test {
 
         vm.expectRevert(bytes("Controller must be a contract."));
         _pool(IERC20(address(loan)), IERC20(address(collateral)), IController(address(0x5678)), 0);
+
+        // At the minimum valid loan, the low-liquidity rate peak must still
+        // produce a repayment that fits LoanInfo.repayment (uint128).
+        uint256[] memory excessiveRates = _rates();
+        excessiveRates[0] =
+            ((uint256(type(uint128).max) - MIN_LOAN + 1) * 1e18 - 1) /
+                MIN_LOAN /
+                BND1 +
+            1;
+        vm.expectRevert(bytes("Rate parameters too large."));
+        new BasePool(
+            _tokens(IERC20(address(loan)), IERC20(address(collateral))),
+            0,
+            LOAN_TENOR,
+            MAX_LOAN_PER_COLL,
+            excessiveRates,
+            _bounds(),
+            MIN_LOAN,
+            CREATOR_FEE,
+            MIN_LIQUIDITY,
+            IController(address(controller)),
+            REWARD_COEFFICIENT
+        );
+    }
+
+    function test_borrowRejectsOnBehalfOfWithoutChangingPoolState() public {
+        SafetyToken loan = new SafetyToken("Loan", "LOAN");
+        ZeroDecimalSafetyToken collateral = new ZeroDecimalSafetyToken("Collateral", "COLL");
+        MockRewardController controller = new MockRewardController();
+        BasePool pool = _pool(IERC20(address(loan)), IERC20(address(collateral)), IController(address(controller)), 0);
+        _approveAndFund(loan, LP, MIN_LIQUIDITY * 2 + 1, address(pool));
+        vm.prank(LP);
+        pool.addLiquidity(LP, MIN_LIQUIDITY * 2 + 1, block.timestamp, 0);
+        _approveAndFund(collateral, BORROWER, 10_000, address(pool));
+
+        vm.expectRevert(bytes("Borrower must be sender."));
+        vm.prank(BORROWER);
+        pool.borrow(address(0xCAFE), 1_000, 0, type(uint128).max, block.timestamp, 0);
+
+        (, , , , , , , , uint256 nextLoanIdx) = pool.getPoolInfo();
+        assertEq(nextLoanIdx, 1, "rejected delegated borrow must not record a loan");
+        assertEq(collateral.balanceOf(BORROWER), 10_000, "rejected delegated borrow must not pull collateral");
     }
 
     function test_loanIndexCeilingRejectsNewBorrowBeforeRecordingState() public {

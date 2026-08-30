@@ -301,6 +301,20 @@ async function main() {
     if (BigNumber.from(MIN_LOAN).gt(MAX_UINT128)) {
         throw new Error(`MIN_LOAN (${MIN_LOAN}) must fit uint128 loan accounting.`)
     }
+    // In the reciprocal range, rate <= R1 * LIQUIDITY_BND_1 because available
+    // liquidity is at least one raw unit. Bound that peak so the smallest valid
+    // quote still fits LoanInfo.repayment (uint128). The +1/-1 account for the
+    // floor in Math.mulDiv and mirror BasePool's exact constructor check.
+    const minLoan = BigNumber.from(MIN_LOAN)
+    const maxRateForMinLoan = MAX_UINT128.sub(minLoan).add(1).mul(MONE).sub(1).div(minLoan)
+    const maxR1 = maxRateForMinLoan.div(BigNumber.from(LIQUIDITY_BND_1))
+    if (BigNumber.from(R1).gt(maxR1)) {
+        throw new Error(
+            `R1 (${R1}) is too large for MIN_LOAN (${MIN_LOAN}) and LIQUIDITY_BND_1 ` +
+                `(${LIQUIDITY_BND_1}); the minimum repayment would exceed uint128 ` +
+                `(BasePool.sol:180-191).`
+        )
+    }
     if (BigNumber.from(MIN_LOAN).gt(MAX_UINT256.div(MONE))) {
         throw new Error(`MIN_LOAN (${MIN_LOAN}) is too large for the BasePool share bound.`)
     }

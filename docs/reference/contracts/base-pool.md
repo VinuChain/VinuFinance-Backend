@@ -143,7 +143,7 @@ Borrows from the pool by pledging collateral.
 
 | Name | Type | Description |
 |------|------|-------------|
-| `_onBehalfOf` | `address` | Loan recipient |
+| `_onBehalfOf` | `address` | Must equal the caller; recorded loan recipient |
 | `_sendAmount` | `uint128` | Collateral amount to pledge |
 | `_minLoanLimit` | `uint128` | Minimum acceptable loan |
 | `_maxRepayLimit` | `uint128` | Maximum acceptable repayment |
@@ -153,6 +153,7 @@ Borrows from the pool by pledging collateral.
 **Reverts if:**
 - Pool is not currently whitelisted by its Controller
 - Pool is paused
+- `_onBehalfOf` is not the caller (borrowing has no delegated authority)
 - Loan amount below `_minLoanLimit`
 - Repayment above `_maxRepayLimit`
 - Atomic add+borrow detected
@@ -292,6 +293,15 @@ function getLpInfo(address _lpAddr) external view returns (
 ```
 
 Returns complete LP information.
+
+### getCurrentLpShares
+
+```solidity
+function getCurrentLpShares(address _lpAddr) external view returns (uint256 currentShares)
+```
+
+Returns only the current LP share balance. Emergency exits use this O(1) getter;
+callers that need historical claim accounting should use `getLpInfo`.
 
 ---
 

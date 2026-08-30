@@ -322,6 +322,12 @@ VinuChain has low gas costs:
 }
 ```
 
+For every pool, the production pre-flight and `BasePool` constructor enforce
+the same cast-safe rate domain: with `U = 2^128 - 1`, the reciprocal peak
+`r1 × liquidityBnd1` must not make the `minLoan` repayment exceed `U`.
+The exact ceiling is `floor(((U - minLoan + 1) × BASE - 1) / minLoan)`;
+all values are raw loan-token units where applicable.
+
 ## Production Deploy Runbook
 
 The canonical production deploy uses **`scripts/deploy.prod.ts`** (env-driven, no

@@ -112,13 +112,9 @@ contract EmergencyWithdrawal is ReentrancyGuard {
         // Store the amount of tokens before the withdraw
         uint256 amountBefore = token.balanceOf(address(this));
 
-        (, , , uint256[] memory sharesOverTime, ) = _pool.getLpInfo(
-            _onBehalfOf
-        );
-
-        // Get the last number of shares
-        require(sharesOverTime.length > 0, "No shares");
-        uint256 currentShares = sharesOverTime[sharesOverTime.length - 1];
+        // Read only the current entitlement. Full LP history can be attacker-grown
+        // and is unnecessary for an emergency exit.
+        uint256 currentShares = _pool.getCurrentLpShares(_onBehalfOf);
         require(currentShares <= type(uint128).max, "Shares too large");
         uint128 shares = uint128(currentShares);
         require(shares > 0, "No shares");

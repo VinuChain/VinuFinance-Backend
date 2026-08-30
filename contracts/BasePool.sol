@@ -177,6 +177,18 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         require(_minLoan > 0, "Min loan must not be 0.");
         require(_minLoan <= type(uint256).max / BASE, "Min loan too large.");
         require(_minLoan <= type(uint128).max, "Min loan too large.");
+        // The smallest valid loan is _minLoan. Bound the maximum reciprocal
+        // rate so its repayment still fits LoanInfo.repayment (uint128), even
+        // at the low-liquidity peak r1 * liquidityBnd1. The `+1` and `-1`
+        // account for Math.mulDiv's floor and make this the exact rate ceiling
+        // for the minimum quote: floor(_minLoan * rate / BASE) <= U - _minLoan.
+        uint256 maxRateForMinLoan =
+            ((uint256(type(uint128).max) - _minLoan + 1) * BASE - 1) /
+            _minLoan;
+        require(
+            _rs[0] <= maxRateForMinLoan / _liquidityBnds[0],
+            "Rate parameters too large."
+        );
         require(_creatorFee <= MAX_FEE, "Creator fee too high.");
         loanCcyToken = _tokens[0];
         collCcyToken = _tokens[1];
@@ -331,15 +343,12 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     /**
      * @notice Borrows funds from the pool
      * 
-     * @dev It is possible to borrow funds on behalf of someone else; that
-     * someone else will be the one to receive the funds Note that in such
-     * case, the caller still needs to provide the collateral, so there is
-     * no financial incentive to borrow funds on behalf of someone else for
-     * malicious purposes.
+     * @dev Borrowing is self-only: the caller provides the collateral, receives
+     * the loan proceeds, and becomes the recorded borrower.
      *
      * @dev When the contract is paused, this function cannot be called
      *
-     * @param _onBehalfOf Address to borrow on behalf of
+     * @param _onBehalfOf Must equal msg.sender and becomes the borrower
      * @param _sendAmount Amount of collateral to send
      * @param _minLoanLimit Minimum loan amount
      * @param _maxRepayLimit Maximum repayment amount
@@ -355,16 +364,16 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         uint256 _referralCode
     ) external payable override nonReentrant whenNotPaused {
         require(msg.value == 0, "Native value unsupported.");
+        if (_onBehalfOf == address(0)) revert("Invalid operation.");
+        require(_onBehalfOf == msg.sender, "Borrower must be sender.");
         _requirePoolWhitelisted();
         uint256 _timestamp = checkTimestamp(_deadline);
         // LoanInfo expiry and LP cursors are uint32-backed. Do not record a
         // loan whose index would make the next cursor unrepresentable.
         require(loanIdx < type(uint32).max, "Loan index too large.");
         // check if atomic add and borrow as well as sanity check of onBehalf address
-        if (
-            lastAddOfTxOrigin[tx.origin] == _timestamp ||
-            _onBehalfOf == address(0)
-        ) revert("Invalid operation.");
+        if (lastAddOfTxOrigin[tx.origin] == _timestamp)
+            revert("Invalid operation.");
         // get borrow terms and do checks
         (
             uint128 loanAmount,
@@ -632,6 +641,24 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         currSharePtr = lpInfo.currSharePtr;
         sharesOverTime = lpInfo.sharesOverTime;
         loanIdxsWhereSharesChanged = lpInfo.loanIdxsWhereSharesChanged;
+    }
+
+    /**
+     * @notice Returns the current LP shares without copying share history
+     * @param _lpAddr Address to get current shares for
+     * @return currentShares The LP's current share balance
+     */
+    function getCurrentLpShares(address _lpAddr)
+        external
+        view
+        override
+        returns (uint256 currentShares)
+    {
+        LpInfo storage lpInfo = addrToLpInfo[_lpAddr];
+        uint256 sharesLength = lpInfo.sharesOverTime.length;
+        if (sharesLength > 0) {
+            currentShares = lpInfo.sharesOverTime[sharesLength - 1];
+        }
     }
 
     /**

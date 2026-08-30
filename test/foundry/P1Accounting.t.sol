@@ -633,7 +633,9 @@ contract P1AccountingTest is Test {
         pool.setApprovals(address(emergency), 4);
         vm.prank(LP2);
         emergency.approve(address(pool), address(this));
+        assertGt(pool.getCurrentLpShares(LP2), 0, "current-share getter must expose the active entitlement");
         emergency.collectEmergency(pool, LP2);
+        assertEq(pool.getCurrentLpShares(LP2), 0, "emergency exit must clear current shares");
     }
 
     function test_pendingRevenueRetriesWithoutInvisiblePoolAssets() public {

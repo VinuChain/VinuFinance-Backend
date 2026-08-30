@@ -172,7 +172,9 @@ interface IBasePool {
 
     /**
      * @notice Function which allows borrowing from the pool
-     * @param _onBehalf Will become owner of the loan
+     * @dev Borrowing is self-only: the caller provides collateral, receives
+     * the loan proceeds, and becomes the recorded borrower.
+     * @param _onBehalf Must equal the caller and becomes owner of the loan
      * @param _sendAmount Amount of collateral to send
      * @param _minLoan Minimum loan currency amount acceptable to borrower
      * @param _maxRepay Maximum allowable loan currency amount borrower is willing to repay
@@ -265,6 +267,13 @@ interface IBasePool {
             uint256[] memory sharesOverTime,
             uint256[] memory loanIdxsWhereSharesChanged
         );
+
+    /**
+     * @notice Returns the current LP shares without copying share history
+     * @param _lpAddr Address for which current shares are retrieved
+     * @return currentShares The LP's current share balance
+     */
+    function getCurrentLpShares(address _lpAddr) external view returns (uint256 currentShares);
 
     /**
      * @notice Function which returns rate parameters need for interest rate calculation

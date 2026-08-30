@@ -240,6 +240,10 @@ function borrow(
 ) external payable;
 ```
 
+Borrowing is self-only: `_onBehalf` must equal the caller, who supplies the
+collateral and receives the loan proceeds. The interface has no delegated
+borrow approval.
+
 ### repay
 
 ```solidity
@@ -280,6 +284,14 @@ function getLpInfo(address _lpAddr) external view returns (
     uint256[] memory loanIdxsWhereSharesChanged
 );
 ```
+
+### getCurrentLpShares
+
+```solidity
+function getCurrentLpShares(address _lpAddr) external view returns (uint256 currentShares);
+```
+
+Returns the current share entitlement in O(1) without copying LP history.
 
 ### getRateParams
 

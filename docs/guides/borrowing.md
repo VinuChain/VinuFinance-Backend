@@ -93,7 +93,7 @@ Call the `borrow` function:
 
 ```solidity
 function borrow(
-    address _onBehalfOf,    // Loan recipient
+    address _onBehalfOf,    // Must equal msg.sender; loan recipient
     uint128 _sendAmount,    // Collateral amount to pledge
     uint128 _minLoanLimit,  // Minimum acceptable loan
     uint128 _maxRepayLimit, // Maximum acceptable repayment
@@ -114,7 +114,7 @@ const collateral = ethers.utils.parseEther("100");
 const deadline = Math.floor(Date.now() / 1000) + 3600;
 
 await pool.borrow(
-    myAddress,      // Receive loan to my address
+    myAddress,      // Must be the connected caller; receives the loan
     collateral,     // Pledge 100 WVC
     minLoan,        // At least this much loan
     maxRepay,       // At most this repayment
