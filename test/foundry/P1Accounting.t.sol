@@ -18,6 +18,21 @@ contract P1Token is ERC20 {
     }
 }
 
+contract P1ApprovalToken is P1Token {
+    bool public failApproval;
+
+    constructor() P1Token("P1 approval token", "P1A") {}
+
+    function setFailApproval(bool fail) external {
+        failApproval = fail;
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        require(!failApproval, "Approval unavailable.");
+        return super.approve(spender, amount);
+    }
+}
+
 contract P1CollateralToken is P1Token {
     constructor() P1Token("P1 collateral", "P1C") {}
 
@@ -444,6 +459,26 @@ contract P1AccountingTest is Test {
         assertEq(loan.balanceOf(LP1), hugeLiquidity - MIN_LIQUIDITY);
     }
 
+    function test_removeLiquidityDoesNotBurnSharesForZeroPayout() public {
+        vm.warp(1_000_000);
+        P1Token loan = new P1Token("P1 loan", "P1L");
+        P1CollateralToken collateral = new P1CollateralToken();
+        BasePool pool = _pool(loan, collateral);
+        _fundAndApprove(loan, LP1, 6_001, address(pool));
+        vm.prank(LP1);
+        pool.addLiquidity(LP1, 6_001, block.timestamp, 0);
+        vm.warp(block.timestamp + 121);
+
+        (, , , uint256[] memory sharesBefore, ) = pool.getLpInfo(LP1);
+        vm.store(address(pool), bytes32(uint256(11)), bytes32(uint256(MIN_LIQUIDITY)));
+        vm.expectRevert(bytes("No removable liquidity."));
+        vm.prank(LP1);
+        pool.removeLiquidity(LP1, uint128(sharesBefore[sharesBefore.length - 1]));
+
+        (, , , uint256[] memory sharesAfter, ) = pool.getLpInfo(LP1);
+        assertEq(sharesAfter[sharesAfter.length - 1], sharesBefore[sharesBefore.length - 1]);
+    }
+
     function test_rewardTrackerAdditionSaturatesWithoutBlockingAdd() public {
         vm.warp(1_000_000);
         P1Token loan = new P1Token("P1 loan", "P1L");
@@ -570,6 +605,34 @@ contract P1AccountingTest is Test {
         assertEq(pool.pendingRevenue(IERC20(address(loan))), 0);
         assertEq(loan.balanceOf(address(controller)), pending);
         assertEq(loan.allowance(address(pool), address(controller)), 0);
+        assertEq(loan.balanceOf(address(pool)), 10_001);
+    }
+
+    function test_revenueApprovalFailureCannotBlockPrincipalOperation() public {
+        vm.warp(1_000_000);
+        P1ApprovalToken loan = new P1ApprovalToken();
+        P1CollateralToken collateral = new P1CollateralToken();
+        P1Controller controller = new P1Controller();
+        BasePool pool = _poolWithController(loan, collateral, IController(address(controller)));
+        _fundAndApprove(loan, LP1, 15_001, address(pool));
+        vm.prank(LP1);
+        pool.addLiquidity(LP1, 10_001, block.timestamp, 0);
+
+        vm.warp(block.timestamp + 121);
+        (, , , uint256[] memory shares, ) = pool.getLpInfo(LP1);
+        vm.prank(LP1);
+        pool.removeLiquidity(LP1, uint128(shares[shares.length - 1]));
+
+        loan.setFailApproval(true);
+        vm.prank(LP1);
+        pool.addLiquidity(LP1, 10_001, block.timestamp, 0);
+        assertEq(pool.pendingRevenue(IERC20(address(loan))), MIN_LIQUIDITY);
+        assertEq(loan.balanceOf(address(pool)), 10_001 + MIN_LIQUIDITY);
+        assertEq(loan.allowance(address(pool), address(controller)), 0);
+
+        loan.setFailApproval(false);
+        pool.flushPendingRevenue(IERC20(address(loan)), type(uint256).max);
+        assertEq(pool.pendingRevenue(IERC20(address(loan))), 0);
         assertEq(loan.balanceOf(address(pool)), 10_001);
     }
 

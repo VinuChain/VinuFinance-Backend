@@ -295,6 +295,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
             _totalLiquidity - minLiquidity,
             _totalLpShares
         );
+        require(liquidityRemoved > 0, "No removable liquidity.");
         totalLpShares -= numShares;
         totalLiquidity = _totalLiquidity - liquidityRemoved;
 
@@ -1504,23 +1505,34 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         if (_amount == 0 || pending == 0) return 0;
         if (_amount > pending) _amount = pending;
 
+        try this._attemptRevenueDeposit(_token, _amount) returns (uint256 amount) {
+            pendingRevenue[_token] = pending - amount;
+            return amount;
+        } catch {
+            // Approval, controller and cleanup failures are all optional. The
+            // external self-call rolls their state back before this catch.
+            return 0;
+        }
+    }
+
+    /**
+     * @dev Isolates optional token approval, controller deposit and allowance
+     *      cleanup so any failure can be atomically caught by the caller.
+     */
+    function _attemptRevenueDeposit(IERC20 _token, uint256 _amount)
+        external
+        returns (uint256 flushedAmount)
+    {
+        require(msg.sender == address(this), "Self call only.");
         uint256 poolBefore = _token.balanceOf(address(this));
         if (poolBefore < _amount) return 0;
 
         _token.safeIncreaseAllowance(address(poolController), _amount);
-        bool deposited;
-        try poolController.depositRevenue(_token, _amount) {
-            deposited = true;
-        } catch {
-            // Optional revenue must never make the originating operation fail.
-        }
-
+        poolController.depositRevenue(_token, _amount);
         uint256 poolAfter = _token.balanceOf(address(this));
-        // Always consume the temporary helper allowance, including a failed
-        // or non-transferring controller callback.
         _token.safeApprove(address(poolController), 0);
 
-        if (!deposited || poolBefore < poolAfter) return 0;
+        if (poolBefore < poolAfter) revert("Unsupported token behavior.");
 
         // A trusted Controller transfers exactly `_amount`. If an optional
         // controller accepts a fee-on-transfer token and reports success,
@@ -1531,7 +1543,6 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         // Revert if a token callback/rebase violates that invariant; reverting
         // also rolls back any external transfer made by the malformed call.
         if (flushedAmount > _amount) revert("Unsupported token behavior.");
-        pendingRevenue[_token] = pending - flushedAmount;
         return flushedAmount;
     }
 
