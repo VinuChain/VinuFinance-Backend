@@ -8,17 +8,47 @@ The read-only reconciler is the precondition for every step:
 node scripts/reconcile-legacy.mjs --json
 ```
 
-It performs only `eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`,
-`eth_getCode`, bounded `eth_getLogs`, and read-only `eth_call` requests. It has no signer, private-key,
-token-transfer, governance, pause, or deployment capability.
+The RPC portion performs only `eth_chainId`, `eth_blockNumber`,
+`eth_getBlockByNumber`, `eth_getCode`, bounded `eth_getLogs`, and read-only
+`eth_call` requests. The report also uses the public HTTPS VinuExplorer v2
+address-transaction and per-transaction token-transfer endpoints for the
+fixed Controller plus ten legacy pool addresses. It has no signer,
+private-key, token-transfer, governance, pause, or deployment capability.
 
-The report is not a complete claims or rewards ledger. It scans bounded loan
-state, reports current Controller revenue/balances, and bounds aggregate
-collateral and repayment reserves when the loan scan is complete. It does not
-replay historical `Claim`, `Reward`, `Reinvest`, or `TokenClaimed` events and
-does not reconstruct per-LP claimable balances or reward liabilities. Use an
-independent archive/event reconciliation before declaring claims, rewards, or
-LP liabilities settled.
+When `analytics.availability` is `AVAILABLE`, the report has exhausted and
+schema-validated each bounded address page through the resolved current head.
+It decodes successful pool `borrow`/`repay` calldata, proves each borrow's
+collateral input and `input - collateralPledge` fee against token transfers to
+the Controller, and cross-checks those fees against Controller snapshot and
+current revenue. It also reports per-loan-token total/available/committed
+liquidity and utilisation, current loan/default/repayment totals, historical
+borrow/repay transaction counts, exact current LP portfolio entitlements (by
+loan token and by LP address), and
+Controller snapshot/claim/reward totals. `depositRewardSupply`,
+`collectReward`, and direct `depositRevenue` calls are decoded when present.
+The current deployment has no reward-supply deposits or collections, a
+zero `rewardSupply()` read, and zero-valued `Reward` events; the report emits
+that as an explicit proof rather than an inferred missing value.
+
+The Explorer index is deliberately bounded (16 pages, 1,000 transactions per
+address, 100 items per page, 2 MB response, and 64 KB calldata). A malformed,
+oversized, failed transfer/receipt read, unsupported historical block, or
+provider failure returns `analytics.availability: "UNAVAILABLE"`; unavailable
+metrics are omitted and never converted to zero. If the Explorer transfer
+endpoint fails, the reconciler uses read-only `trace_transaction` for the
+specific already-discovered transaction and fails closed if that also fails.
+The existing RPC state/event reconciliation remains independent of this
+external index. This slice intentionally has a `ponytail:` ceiling at the
+manifest's fixed legacy address set and VinuExplorer v2 schema; a new
+deployment generation requires a new address registry and separately reviewed
+provider/schema adapter.
+
+This is a current-deployment analytics ledger, not a generic historical
+claims-liability engine. It reports the bounded `Reward` and `TokenClaimed`
+event totals and the exact current LP positions known by the reconciler; a
+future deployment or a provider that cannot exhaust the fixed address pages
+requires an independently reviewed archive/event source before declaring
+claimable residuals settled.
 
 ## Known legacy hazards
 
@@ -109,11 +139,10 @@ minutes) from an isolated read-only worker. Alert on:
 - changes to outstanding/repaid/expired loan counts, committed principal,
   settled repayments, default collateral, active/expired collateral, remaining
   default collateral, or claimed default collateral;
-- controller revenue/balance changes or non-zero reward coefficients. This
-  report does not establish historical reward-event totals or claimable
-  residuals; monitor those with the independent event/LP-liability process
-  described above. Also alert on repayment reserve or claimed/reinvested
-  repayment changes;
+- controller revenue/balance changes, analytics becoming unavailable, non-zero
+  reward supply, reward deposits/collections, non-zero Reward totals, or a
+  fee/input/Controller-revenue mismatch. Also alert on repayment reserve or
+  claimed/reinvested repayment changes;
 - any USDT decimal mismatch beyond the two explicitly recorded legacy pools;
 - frontend generation/address/ABI hash not matching the release registry.
 

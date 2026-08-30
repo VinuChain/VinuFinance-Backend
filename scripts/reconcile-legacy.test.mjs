@@ -2,7 +2,30 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ADD_LIQUIDITY_TOPIC, LP_INTERFACE, NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, decodeLpOwners, keccak256, loadManifest, lpEntitlement, readLpOwnerEvents, readNewSubPoolEvents, resolveReadTag, safeRpcOrigin, validateManifest } from "./reconcile-legacy.mjs";
+import {
+  ADD_LIQUIDITY_TOPIC,
+  ANALYTICS_CONTROLLER_INTERFACE,
+  ANALYTICS_POOL_INTERFACE,
+  LP_INTERFACE,
+  NEW_SUB_POOL_INTERFACE,
+  NEW_SUB_POOL_TOPIC,
+  decodeLpOwners,
+  decodeTraceTransfers,
+  keccak256,
+  loadManifest,
+  lpEntitlement,
+  parseAnalyticsTransaction,
+  readExplorerAddressTransactions,
+  readExplorerTransactionTransfers,
+  readLpOwnerEvents,
+  readNewSubPoolEvents,
+  resolveReadTag,
+  safeExplorerApiUrl,
+  safeRpcOrigin,
+  validateExplorerAddressTransactionPage,
+  validateExplorerTransferPage,
+  validateManifest,
+} from "./reconcile-legacy.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = validateManifest(loadManifest(resolve(root, "deployments/vinuchain-legacy.json")));
@@ -39,6 +62,9 @@ assert.ok(runtimeHashes.every((hash) => /^0x[0-9a-f]{64}$/.test(hash)), "runtime
 assert.equal(manifest.contracts.controller.address.toLowerCase(), "0x17ba239f2815ba01152522521737275a2439216f");
 assert.equal(manifest.observedLoans.find((loan) => loan.pool.toLowerCase() === "0xb8f54383b78fab60d2ecedc59b5cde9a6ae655d1" && loan.loanIdx === 1).borrower, "0x9ceaab056d465812c9e0edce6f0f24f4d99ee79a");
 assert.equal(safeRpcOrigin("https://rpc-user:rpc-password@rpc.vinuchain.org/private/secret?api_key=query-secret#fragment-secret"), "https://rpc.vinuchain.org");
+assert.throws(() => safeExplorerApiUrl("https://explorer-user:explorer-password@mainnet.vinuexplorer.org/api/v2?api_key=query-secret#fragment-secret"), /credentials/);
+assert.equal(safeExplorerApiUrl("http://localhost:8545/api/v2"), "http://localhost:8545/api/v2");
+assert.throws(() => safeExplorerApiUrl("http://mainnet.vinuexplorer.org/api/v2"), /HTTPS/);
 assert.ok(readFileSync(resolve(root, "deployments/vinuchain-legacy.json"), "utf8").includes("Panic(0x11)"));
 assert.equal(lpEntitlement(10_000n, 1_000n, 10n, 3n), 2_700n);
 assert.equal(lpEntitlement(1_000n, 1_000n, 0n, 0n), 0n);
@@ -152,5 +178,94 @@ assert.equal(lpEventReport.chunks, 5);
 assert.ok(lpRequests.every((request) => request.topics[0] === ADD_LIQUIDITY_TOPIC));
 assert.ok(lpRequests.every((request) => request.address.length === 10));
 assert.ok(lpRequests.every((request) => request.toBlock !== "latest"));
+
+const txHash = `0x${"22".repeat(32)}`;
+const explorerAddress = manifest.contracts.controller.address;
+const decodedBorrow = parseAnalyticsTransaction(ANALYTICS_POOL_INTERFACE, {
+  raw_input: ANALYTICS_POOL_INTERFACE.encodeFunctionData("borrow", [explorerAddress, 300, 200, 100, 7, 8]),
+});
+assert.equal(decodedBorrow.name, "borrow");
+assert.equal(decodedBorrow.args[1].toString(), "300");
+assert.equal(parseAnalyticsTransaction(ANALYTICS_CONTROLLER_INTERFACE, {
+  raw_input: ANALYTICS_CONTROLLER_INTERFACE.encodeFunctionData("depositRewardSupply", [9]),
+}).name, "depositRewardSupply");
+assert.equal(parseAnalyticsTransaction(ANALYTICS_CONTROLLER_INTERFACE, {
+  raw_input: ANALYTICS_CONTROLLER_INTERFACE.encodeFunctionData("collectReward", [false]),
+}).name, "collectReward");
+const validExplorerTransaction = {
+  hash: txHash,
+  block_number: 14700000,
+  raw_input: "0x",
+  result: "success",
+  from: { hash: lpOwner },
+  to: { hash: explorerAddress },
+};
+assert.deepEqual(validateExplorerAddressTransactionPage({ items: [validExplorerTransaction], next_page_params: null }).items, [validExplorerTransaction]);
+assert.throws(() => validateExplorerAddressTransactionPage({ items: [{ ...validExplorerTransaction, raw_input: "0x0" }], next_page_params: null }), /raw_input/);
+assert.throws(() => validateExplorerAddressTransactionPage({ items: [validExplorerTransaction], next_page_params: {} }), /next_page_params/);
+assert.throws(() => validateExplorerAddressTransactionPage({ items: Array.from({ length: 101 }, () => validExplorerTransaction), next_page_params: null }), /exceeds/);
+
+const pagedExplorer = {
+  calls: 0,
+  async addressTransactions() {
+    this.calls += 1;
+    return this.calls === 1
+      ? { items: [validExplorerTransaction], next_page_params: { block_number: "14700000", index: "1" } }
+      : { items: [], next_page_params: null };
+  },
+};
+const pagedReport = await readExplorerAddressTransactions(pagedExplorer, explorerAddress);
+assert.equal(pagedReport.pages, 2);
+assert.equal(pagedReport.transactions.length, 1);
+assert.equal(pagedReport.address, explorerAddress.toLowerCase());
+await assert.rejects(
+  () => readExplorerAddressTransactions({ addressTransactions: async () => ({ items: [validExplorerTransaction, validExplorerTransaction], next_page_params: null }) }, explorerAddress, { maxTransactions: 1 }),
+  /transaction cap/,
+);
+await assert.rejects(
+  () => readExplorerAddressTransactions({ addressTransactions: async () => ({ items: [validExplorerTransaction], next_page_params: { block_number: "1" } }) }, explorerAddress, { maxPages: 1 }),
+  /page cap/,
+);
+await assert.rejects(
+  () => readExplorerAddressTransactions({ addressTransactions: async () => { throw new Error("upstream unavailable"); } }, explorerAddress),
+  /upstream unavailable/,
+);
+
+const transfer = {
+  transaction_hash: txHash,
+  from: { hash: lpOwner },
+  to: { hash: explorerAddress },
+  token: { address: manifest.tokens.wvc.address },
+  total: { value: "123", decimals: "18" },
+};
+assert.deepEqual(validateExplorerTransferPage({ items: [transfer], next_page_params: null }).items, [transfer]);
+assert.throws(() => validateExplorerTransferPage({ items: [{ ...transfer, total: { value: "-1", decimals: "18" } }], next_page_params: null }), /total/);
+const transferClient = {
+  calls: 0,
+  async transactionTransfers() {
+    this.calls += 1;
+    return this.calls === 1 ? { items: [transfer], next_page_params: null } : { items: [], next_page_params: null };
+  },
+};
+const transferReport = await readExplorerTransactionTransfers(transferClient, txHash);
+assert.equal(transferReport.transfers.length, 1);
+await assert.rejects(
+  () => readExplorerTransactionTransfers({ transactionTransfers: async () => ({ items: [transfer, transfer], next_page_params: null }) }, txHash, { maxTransactions: 1 }),
+  /transfer cap/,
+);
+
+const traceToken = manifest.tokens.wvc.address;
+const traceFrom = lpOwner;
+const traceTo = explorerAddress;
+const transferTraceInput = `0x${"a9059cbb"}${"0".repeat(24)}${traceTo.slice(2)}${"0".repeat(62)}7b`;
+const transferFromTraceInput = `0x${"23b872dd"}${"0".repeat(24)}${traceFrom.slice(2)}${"0".repeat(24)}${traceTo.slice(2)}${"0".repeat(62)}7b`;
+const traceTransfers = decodeTraceTransfers([
+  { type: "call", action: { from: explorerAddress, to: traceToken, input: transferTraceInput } },
+  { type: "call", action: { from: explorerAddress, to: traceToken, input: transferFromTraceInput } },
+  { type: "call", error: "execution reverted", action: { from: explorerAddress, to: traceToken, input: transferTraceInput } },
+]);
+assert.equal(traceTransfers.length, 2);
+assert.equal(traceTransfers[0].to, traceTo.toLowerCase());
+assert.equal(traceTransfers[1].from, traceFrom.toLowerCase());
 
 console.log(`reconcile-legacy self-test passed: ${manifest.pools.length} pools, ${usdtPools.length} USDT pools, ${decimalMismatches.length} declared/token decimal mismatches`);
