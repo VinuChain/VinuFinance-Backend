@@ -32,6 +32,10 @@ const EXPLORER_MAX_RESPONSE_BYTES = 2_000_000;
 // Pool/controller calls are short, but the fixed address inventory includes
 // one contract-creation transaction whose init code is ~26 KB.
 const EXPLORER_MAX_RAW_INPUT_BYTES = 64 * 1024;
+const ANALYTICS_MAX_REQUESTS = 2_000;
+const ANALYTICS_TIMEOUT_MS = 120_000;
+const UINT256_MAX_DECIMAL = ((1n << 256n) - 1n).toString();
+const PRODUCTION_EXPLORER_ORIGIN = "https://mainnet.vinuexplorer.org";
 const EXPLORER_RESULT_VALUES = new Set(["success", "error", "failed", "reverted", "awaiting_internal_transactions", "pending"]);
 const NEW_SUB_POOL_INTERFACE = new ethersUtils.Interface([
   "event NewSubPool(address loanCcyToken,address collCcyToken,uint256 loanTenor,uint256 maxLoanPerColl,uint256 r1,uint256 r2,uint256 liquidityBnd1,uint256 liquidityBnd2,uint256 minLoan,uint256 creatorFee,address poolController,uint96 rewardCoefficient)",
@@ -135,8 +139,8 @@ function safeRpcOrigin(url) {
 function safeExplorerApiUrl(url) {
   const parsed = url instanceof URL ? new URL(url.toString()) : new URL(url);
   const localHttp = parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
-  if ((parsed.protocol !== "https:" && !localHttp) || parsed.username || parsed.password) {
-    throw new Error("Explorer API URL must be HTTPS (HTTP is allowed only for localhost) without credentials");
+  if ((parsed.protocol !== "https:" && !localHttp) || (parsed.protocol === "https:" && parsed.origin !== PRODUCTION_EXPLORER_ORIGIN) || parsed.username || parsed.password) {
+    throw new Error("Explorer API URL must use the pinned production origin (HTTP is allowed only for localhost) without credentials");
   }
   parsed.search = "";
   parsed.hash = "";
@@ -158,6 +162,28 @@ function validHex(value) {
 
 function validDecimal(value) {
   return typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
+}
+
+function validUint256Decimal(value) {
+  if (!validDecimal(value) || value.length > UINT256_MAX_DECIMAL.length) return false;
+  return value.length < UINT256_MAX_DECIMAL.length || value <= UINT256_MAX_DECIMAL;
+}
+
+function validTokenDecimals(value) {
+  return validDecimal(value) && value.length <= 3 && Number(value) <= 255;
+}
+
+function createAnalyticsBudget(maxRequests = ANALYTICS_MAX_REQUESTS, timeoutMs = ANALYTICS_TIMEOUT_MS) {
+  if (!Number.isSafeInteger(maxRequests) || maxRequests < 1) throw new Error("Analytics request budget must be a positive integer");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Analytics time budget must be a positive integer");
+  return { startedAt: Date.now(), requests: 0, maxRequests, timeoutMs };
+}
+
+function consumeAnalyticsBudget(budget) {
+  if (!budget) return;
+  if (Date.now() - budget.startedAt >= budget.timeoutMs) throw new Error(`Analytics request budget exceeded ${budget.timeoutMs}ms`);
+  budget.requests += 1;
+  if (budget.requests > budget.maxRequests) throw new Error(`Analytics request budget exceeded ${budget.maxRequests} requests`);
 }
 
 function validateNextPageParams(value, label) {
@@ -189,21 +215,24 @@ function validateExplorerAddressTransactionPage(payload) {
   return { items, nextPageParams };
 }
 
-function validateExplorerTransfer(item, index) {
+function validateExplorerTransfer(item, index, expectedTokenDecimals) {
   const label = `Explorer transfer ${index}`;
   if (!isPlainObject(item) || !validHash(item.transaction_hash)) throw new Error(`${label}.transaction_hash is invalid`);
+  if (!validDecimal(item.log_index)) throw new Error(`${label}.log_index is invalid`);
   if (!isPlainObject(item.from) || !ADDRESS_RE.test(item.from.hash)) throw new Error(`${label}.from.hash is invalid`);
   if (!isPlainObject(item.to) || !ADDRESS_RE.test(item.to.hash)) throw new Error(`${label}.to.hash is invalid`);
   if (!isPlainObject(item.token) || !ADDRESS_RE.test(item.token.address)) throw new Error(`${label}.token.address is invalid`);
-  if (!isPlainObject(item.total) || !validDecimal(item.total.value) || !validDecimal(item.total.decimals)) throw new Error(`${label}.total is invalid`);
+  if (!isPlainObject(item.total) || !validUint256Decimal(item.total.value) || !validTokenDecimals(item.total.decimals)) throw new Error(`${label}.total is invalid`);
+  const expectedDecimals = expectedTokenDecimals?.get(item.token.address.toLowerCase());
+  if (expectedDecimals !== undefined && Number(item.total.decimals) !== expectedDecimals) throw new Error(`${label}.total.decimals does not match the manifest token`);
   return item;
 }
 
-function validateExplorerTransferPage(payload) {
+function validateExplorerTransferPage(payload, expectedTokenDecimals) {
   if (!isPlainObject(payload) || !Array.isArray(payload.items)) throw new Error("Explorer transfer page must contain an items array");
   if (payload.items.length > EXPLORER_PAGE_SIZE_CAP) throw new Error(`Explorer transfer page exceeds ${EXPLORER_PAGE_SIZE_CAP} items`);
   const nextPageParams = validateNextPageParams(payload.next_page_params, "Explorer transfer page");
-  const items = payload.items.map(validateExplorerTransfer);
+  const items = payload.items.map((item, index) => validateExplorerTransfer(item, index, expectedTokenDecimals));
   return { items, nextPageParams };
 }
 
@@ -255,20 +284,28 @@ class ExplorerClient {
 async function readExplorerAddressTransactions(client, address, {
   maxPages = EXPLORER_MAX_PAGES,
   maxTransactions = EXPLORER_MAX_TRANSACTIONS,
+  budget,
 } = {}) {
   if (!client || typeof client.addressTransactions !== "function") throw new Error("Explorer transaction client is invalid");
   if (!ADDRESS_RE.test(address)) throw new Error(`Invalid Explorer address: ${address}`);
   if (!Number.isInteger(maxPages) || maxPages < 1) throw new Error("Explorer page cap must be positive");
   if (!Number.isInteger(maxTransactions) || maxTransactions < 1) throw new Error("Explorer transaction cap must be positive");
   const transactions = [];
+  const transactionHashes = new Set();
   let pageParams;
   let pages = 0;
   while (true) {
     pages += 1;
     if (pages > maxPages) throw new Error(`Explorer page cap exceeded for ${address}`);
+    consumeAnalyticsBudget(budget);
     const page = validateExplorerAddressTransactionPage(await client.addressTransactions(address, pageParams));
     if (transactions.length + page.items.length > maxTransactions) throw new Error(`Explorer transaction cap exceeded for ${address}`);
-    transactions.push(...page.items);
+    for (const item of page.items) {
+      const hash = item.hash.toLowerCase();
+      if (transactionHashes.has(hash)) throw new Error(`Explorer transaction ${item.hash} was returned more than once for ${address}`);
+      transactionHashes.add(hash);
+      transactions.push(item);
+    }
     if (!page.nextPageParams) return { address: address.toLowerCase(), pages, transactions };
     pageParams = page.nextPageParams;
   }
@@ -277,20 +314,30 @@ async function readExplorerAddressTransactions(client, address, {
 async function readExplorerTransactionTransfers(client, hash, {
   maxPages = EXPLORER_MAX_PAGES,
   maxTransactions = EXPLORER_MAX_TRANSACTIONS,
+  expectedTokenDecimals,
+  budget,
 } = {}) {
   if (!client || typeof client.transactionTransfers !== "function") throw new Error("Explorer transfer client is invalid");
   if (!validHash(hash)) throw new Error(`Invalid Explorer transaction hash: ${hash}`);
   if (!Number.isInteger(maxPages) || maxPages < 1) throw new Error("Explorer transfer page cap must be positive");
   if (!Number.isInteger(maxTransactions) || maxTransactions < 1) throw new Error("Explorer transfer cap must be positive");
   const transfers = [];
+  const transferIds = new Set();
   let pageParams;
   let pages = 0;
   while (true) {
     pages += 1;
     if (pages > maxPages) throw new Error(`Explorer transfer page cap exceeded for ${hash}`);
-    const page = validateExplorerTransferPage(await client.transactionTransfers(hash, pageParams));
+    consumeAnalyticsBudget(budget);
+    const page = validateExplorerTransferPage(await client.transactionTransfers(hash, pageParams), expectedTokenDecimals);
+    if (page.items.some((item) => item.transaction_hash.toLowerCase() !== hash.toLowerCase())) throw new Error(`Explorer transfer response is not bound to transaction ${hash}`);
     if (transfers.length + page.items.length > maxTransactions) throw new Error(`Explorer transfer cap exceeded for ${hash}`);
-    transfers.push(...page.items);
+    for (const item of page.items) {
+      const id = `${item.transaction_hash.toLowerCase()}:${item.log_index}`;
+      if (transferIds.has(id)) throw new Error(`Explorer transfer ${id} was returned more than once`);
+      transferIds.add(id);
+      transfers.push(item);
+    }
     if (!page.nextPageParams) return { hash: hash.toLowerCase(), pages, transfers };
     pageParams = page.nextPageParams;
   }
@@ -460,6 +507,7 @@ async function readNewSubPoolEvents(rpc, manifest, toBlockHex, findings) {
     }
     const end = start + BigInt(EVENT_CHUNK_SIZE - 1) < toBlock ? start + BigInt(EVENT_CHUNK_SIZE - 1) : toBlock;
     const result = await rpc.request("eth_getLogs", [{
+      address: manifest.pools.map((pool) => pool.address),
       fromBlock: blockTag(start.toString()),
       toBlock: blockTag(end.toString()),
       topics: [NEW_SUB_POOL_TOPIC],
@@ -473,6 +521,8 @@ async function readNewSubPoolEvents(rpc, manifest, toBlockHex, findings) {
   const seen = new Map();
   const records = [];
   for (const log of logs) {
+    const address = String(log.address).toLowerCase();
+    if (!expected.has(address)) continue;
     let parsed;
     try {
       parsed = NEW_SUB_POOL_INTERFACE.parseLog({ topics: log.topics, data: log.data });
@@ -499,13 +549,7 @@ async function readNewSubPoolEvents(rpc, manifest, toBlockHex, findings) {
       rewardCoefficient: textValue(args.rewardCoefficient),
     };
     if (!sameAddress(event.poolController, controllerAddress)) continue;
-    const address = event.pool;
     const pool = expected.get(address);
-    if (!pool) {
-      addFinding(findings, "error", "UNEXPECTED_NEW_SUBPOOL", `events.${address}`, "manifest pool", event.pool);
-      records.push(event);
-      continue;
-    }
     const count = (seen.get(address) ?? 0) + 1;
     seen.set(address, count);
     if (count > 1) addFinding(findings, "error", "DUPLICATE_NEW_SUBPOOL", `events.${pool.id}`, 1, count);
@@ -535,7 +579,22 @@ async function readNewSubPoolEvents(rpc, manifest, toBlockHex, findings) {
   };
 }
 
-async function readControllerAnalyticsEvents(rpc, manifest, toBlockHex, findings) {
+function validateControllerAnalyticsLog(log, index, controllerAddress, fromBlock, toBlock) {
+  const label = `Controller analytics log ${index}`;
+  if (!isPlainObject(log)) throw new Error(`${label} must be an object`);
+  if (!sameAddress(log.address, controllerAddress)) throw new Error(`${label} has an unexpected emitter`);
+  if (!/^0x[0-9a-f]+$/i.test(log.blockNumber ?? "")) throw new Error(`${label}.blockNumber is invalid`);
+  const block = BigInt(log.blockNumber);
+  if (block < fromBlock || block > toBlock) throw new Error(`${label}.blockNumber is outside the requested range`);
+  if (!validHash(log.blockHash)) throw new Error(`${label}.blockHash is invalid`);
+  if (!validHash(log.transactionHash)) throw new Error(`${label}.transactionHash is invalid`);
+  if (!/^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(log.logIndex ?? "")) throw new Error(`${label}.logIndex is invalid`);
+  if (log.removed !== undefined && typeof log.removed !== "boolean") throw new Error(`${label}.removed is invalid`);
+  if (log.removed === true) throw new Error(`${label} was removed`);
+  if (!validHex(log.data) || !Array.isArray(log.topics) || log.topics.some((topic) => !validHash(topic))) throw new Error(`${label} ABI fields are invalid`);
+}
+
+async function readControllerAnalyticsEvents(rpc, manifest, toBlockHex, findings, budget) {
   const fromBlock = BigInt(manifest.network.eventScanStartBlock);
   const toBlock = BigInt(toBlockHex);
   if (fromBlock > toBlock) throw new Error(`Controller event range starts after block ${toBlock}`);
@@ -545,6 +604,7 @@ async function readControllerAnalyticsEvents(rpc, manifest, toBlockHex, findings
     chunks += 1;
     if (chunks > MAX_EVENT_CHUNKS) throw new Error(`Controller event scan cap exceeded at ${chunks} chunks`);
     const end = start + BigInt(EVENT_CHUNK_SIZE - 1) < toBlock ? start + BigInt(EVENT_CHUNK_SIZE - 1) : toBlock;
+    consumeAnalyticsBudget(budget);
     const result = await rpc.request("eth_getLogs", [{
       address: manifest.contracts.controller.address,
       fromBlock: blockTag(start.toString()),
@@ -558,13 +618,18 @@ async function readControllerAnalyticsEvents(rpc, manifest, toBlockHex, findings
   const claims = [];
   const rewards = [];
   const depositedVoteTokens = [];
-  for (const log of logs) {
+  const seenLogs = new Set();
+  for (const [index, log] of logs.entries()) {
     let parsed;
     try {
+      validateControllerAnalyticsLog(log, index, manifest.contracts.controller.address, fromBlock, toBlock);
+      const logId = `${log.transactionHash.toLowerCase()}:${log.logIndex.toLowerCase()}`;
+      if (seenLogs.has(logId)) throw new Error(`${logId} was returned more than once`);
+      seenLogs.add(logId);
       parsed = ANALYTICS_CONTROLLER_INTERFACE.parseLog({ topics: log.topics, data: log.data });
     } catch (error) {
       addFinding(findings, "error", "CONTROLLER_ANALYTICS_EVENT_DECODE_FAILED", "controller.analyticsEvents.log", "known Controller analytics ABI", error.message);
-      continue;
+      throw new Error(`Controller analytics event is invalid: ${error.message}`);
     }
     const base = {
       block: Number(BigInt(log.blockNumber)),
@@ -661,9 +726,9 @@ function decodeTraceTransfers(traceResult) {
   return traceResult.map(decodeTraceTransferCall).filter(Boolean);
 }
 
-async function readTransactionTransfers(explorer, rpc, hash) {
+async function readTransactionTransfers(explorer, rpc, hash, expectedTokenDecimals, budget) {
   try {
-    const report = await readExplorerTransactionTransfers(explorer, hash);
+    const report = await readExplorerTransactionTransfers(explorer, hash, { expectedTokenDecimals, budget });
     return { source: "vinuexplorer-token-transfers", pages: report.pages, transfers: report.transfers.map((item) => ({
       from: item.from.hash.toLowerCase(),
       to: item.to.hash.toLowerCase(),
@@ -673,6 +738,7 @@ async function readTransactionTransfers(explorer, rpc, hash) {
   } catch (explorerError) {
     if (!rpc || typeof rpc.request !== "function") throw new Error(`Token transfer retrieval failed: ${explorerError.message}`);
     try {
+      consumeAnalyticsBudget(budget);
       const traceResult = await rpc.request("trace_transaction", [hash]);
       return { source: "rpc-trace_transaction", pages: 1, transfers: decodeTraceTransfers(traceResult) };
     } catch (traceError) {
@@ -751,6 +817,29 @@ function lpEntitlement(totalLiquidity, minLiquidity, totalLpShares, currentShare
   return ((totalLiquidity - minLiquidity) * currentShares) / totalLpShares;
 }
 
+async function simulateLpExit(rpc, owner, poolAddress, currentShares, earliestRemove, blockTimestamp, tag, scope, findings) {
+  if (blockTimestamp < earliestRemove) return { status: "TIMELOCKED", error: undefined };
+  const ownerCode = await rpc.request("eth_getCode", [owner, tag]);
+  if (String(ownerCode).toLowerCase() !== "0x") {
+    addFinding(findings, "warning", "LP_CONTRACT_OWNER_EXIT_UNAVAILABLE", scope, "EOA owner with empty code", "non-empty bytecode");
+    return { status: "UNAVAILABLE", error: "LP owner is a contract; execution reachability is unavailable" };
+  }
+  try {
+    await rpc.request("eth_call", [{
+      from: owner,
+      to: poolAddress,
+      data: callData("removeLiquidity(address,uint128)", [
+        { type: "address", value: owner },
+        { type: "uint128", value: currentShares },
+      ]),
+    }, tag]);
+    return { status: "SUCCESS", error: undefined };
+  } catch (error) {
+    addFinding(findings, "error", "FULL_EXIT_SIMULATION_FAILED", scope, "successful owner full exit", error.message);
+    return { status: "REVERTED", error: error.message };
+  }
+}
+
 async function readLpPositions(rpc, manifest, poolReports, tag, blockTimestamp, toBlockHex, findings) {
   const eventReport = await readLpOwnerEvents(rpc, manifest, toBlockHex, findings);
   const reportsByAddress = new Map(poolReports.map((pool) => [pool.address.toLowerCase(), pool]));
@@ -789,23 +878,7 @@ async function readLpPositions(rpc, manifest, poolReports, tag, blockTimestamp, 
         addFinding(findings, "error", "LP_ENTITLEMENT_INVALID", `${pool.id}.${owner}`, "valid pro-rata position", error.message);
       }
 
-      let fullExit = { status: "TIMELOCKED", error: undefined };
-      if (blockTimestamp >= earliestRemove) {
-        try {
-          await rpc.request("eth_call", [{
-            from: owner,
-            to: pool.address,
-            data: callData("removeLiquidity(address,uint128)", [
-              { type: "address", value: owner },
-              { type: "uint128", value: currentShares },
-            ]),
-          }, tag]);
-          fullExit = { status: "SUCCESS", error: undefined };
-        } catch (error) {
-          fullExit = { status: "REVERTED", error: error.message };
-          addFinding(findings, "error", "FULL_EXIT_SIMULATION_FAILED", `${pool.id}.${owner}`, "successful owner full exit", error.message);
-        }
-      }
+      const fullExit = await simulateLpExit(rpc, owner, pool.address, currentShares, earliestRemove, blockTimestamp, tag, `${pool.id}.${owner}`, findings);
 
       observedShares += currentShares;
       observedEntitlement += entitlement;
@@ -1010,9 +1083,15 @@ function tokenKey(manifest, address) {
 
 function analyticsSource(manifest, block, retrievedAt) {
   const retrievalBlock = typeof block.number === "number" ? block.number : Number(BigInt(block.number));
+  let apiBaseUrl = null;
+  try {
+    apiBaseUrl = safeExplorerApiUrl(manifest.network.explorerApiUrl);
+  } catch (_error) {
+    // Keep an unavailable report serializable without echoing an invalid URL.
+  }
   return {
     api: "VinuExplorer v2 address transaction index",
-    apiBaseUrl: safeExplorerApiUrl(manifest.network.explorerApiUrl),
+    apiBaseUrl,
     endpoints: [
       "/addresses/{address}/transactions",
       "/transactions/{hash}/token-transfers",
@@ -1032,6 +1111,8 @@ function analyticsSource(manifest, block, retrievedAt) {
       maxTransactionsPerAddress: EXPLORER_MAX_TRANSACTIONS,
       maxPageSize: EXPLORER_PAGE_SIZE_CAP,
       eventChunkSize: EVENT_CHUNK_SIZE,
+      maxAnalyticsRequests: ANALYTICS_MAX_REQUESTS,
+      maxAnalyticsDurationMs: ANALYTICS_TIMEOUT_MS,
     },
   };
 }
@@ -1058,7 +1139,8 @@ function receiptLogsFor(receipt, address, topic) {
   return (receipt.logs ?? []).filter((log) => sameAddress(log.address, address) && String(log.topics?.[0]).toLowerCase() === topic.toLowerCase());
 }
 
-async function readReceipt(rpc, hash) {
+async function readReceipt(rpc, hash, budget) {
+  consumeAnalyticsBudget(budget);
   const receipt = await rpc.request("eth_getTransactionReceipt", [hash]);
   if (!isPlainObject(receipt) || !Array.isArray(receipt.logs)) throw new Error(`Receipt unavailable for ${hash}`);
   if (receipt.status !== undefined && receipt.status !== "0x1") throw new Error(`Transaction ${hash} did not succeed (status ${receipt.status})`);
@@ -1167,13 +1249,13 @@ function buildLiquidityAnalytics(manifest, poolReports) {
   }));
 }
 
-async function readAnalytics(rpc, explorer, manifest, block, callTag, poolReports, controllerState, controllerEvents, lpPositions, findings) {
+async function readAnalytics(rpc, explorer, manifest, block, callTag, poolReports, controllerState, controllerEvents, lpPositions, findings, budget = createAnalyticsBudget()) {
   const retrievedAt = new Date().toISOString();
   const source = analyticsSource(manifest, block, retrievedAt);
   const addresses = [manifest.contracts.controller.address, ...manifest.pools.map((pool) => pool.address)];
   const inventories = new Map();
   for (const address of addresses) {
-    const inventory = await readExplorerAddressTransactions(explorer, address);
+    const inventory = await readExplorerAddressTransactions(explorer, address, { budget });
     inventories.set(address.toLowerCase(), inventory);
   }
 
@@ -1192,6 +1274,7 @@ async function readAnalytics(rpc, explorer, manifest, block, callTag, poolReport
   const controllerFeeTransfersByToken = new Map();
   const borrowRecords = [];
   const controllerActions = [];
+  const expectedTokenDecimals = new Map(Object.values(manifest.tokens).map((token) => [token.address.toLowerCase(), token.decimals]));
 
   for (const pool of manifest.pools) {
     const inventory = inventories.get(pool.address.toLowerCase());
@@ -1199,9 +1282,9 @@ async function readAnalytics(rpc, explorer, manifest, block, callTag, poolReport
       const parsed = parseAnalyticsTransaction(ANALYTICS_POOL_INTERFACE, item);
       if (!parsed || parsed.name !== "borrow") continue;
       const sendAmount = bigintArg(parsed.args, 1);
-      const receipt = await readReceipt(rpc, item.hash);
+      const receipt = await readReceipt(rpc, item.hash, budget);
       const borrow = parseBorrowLog(receipt, pool.address, item.hash);
-      const transfers = await readTransactionTransfers(explorer, rpc, item.hash);
+      const transfers = await readTransactionTransfers(explorer, rpc, item.hash, expectedTokenDecimals, budget);
       // borrow's _sendAmount is the collateral token sent by the borrower;
       // the loan token is the asset sent back by the pool.
       const feeToken = manifest.tokens[pool.collateralToken].address.toLowerCase();
@@ -1242,8 +1325,8 @@ async function readAnalytics(rpc, explorer, manifest, block, callTag, poolReport
     const parsed = parseAnalyticsTransaction(ANALYTICS_CONTROLLER_INTERFACE, item);
     if (!parsed) continue;
     if (!["depositRewardSupply", "collectReward", "depositRevenue"].includes(parsed.name)) continue;
-    const receipt = await readReceipt(rpc, item.hash);
-    const transfers = await readTransactionTransfers(explorer, rpc, item.hash);
+    const receipt = await readReceipt(rpc, item.hash, budget);
+    const transfers = await readTransactionTransfers(explorer, rpc, item.hash, expectedTokenDecimals, budget);
     controllerActions.push({ transactionHash: item.hash.toLowerCase(), block: item.block_number, method: parsed.name });
     if (parsed.name === "depositRewardSupply") {
       const amount = bigintArg(parsed.args, 0);
@@ -1441,8 +1524,11 @@ Exit codes: 0 healthy, 2 reconciled but degraded by known legacy risks, 1 RPC or
 
 export {
   ADD_LIQUIDITY_TOPIC,
+  ANALYTICS_MAX_REQUESTS,
+  ANALYTICS_TIMEOUT_MS,
   ANALYTICS_CONTROLLER_INTERFACE,
   ANALYTICS_POOL_INTERFACE,
+  createAnalyticsBudget,
   EXPLORER_MAX_PAGES,
   EXPLORER_MAX_TRANSACTIONS,
   LP_INTERFACE,
@@ -1463,6 +1549,8 @@ export {
   resolveReadTag,
   safeExplorerApiUrl,
   safeRpcOrigin,
+  simulateLpExit,
+  unavailableAnalytics,
   validateExplorerAddressTransactionPage,
   validateExplorerTransferPage,
   validateManifest,
@@ -1551,9 +1639,10 @@ export async function main(argv = process.argv.slice(2)) {
   for (const pool of manifest.pools) pools.push(await readPool(rpc, pool, manifest, callTag, blockTimestamp, maxLoans, findings));
   const events = await readNewSubPoolEvents(rpc, manifest, blockNumberHex, findings);
   const lpPositions = await readLpPositions(rpc, manifest, pools, callTag, blockTimestamp, blockNumberHex, findings);
+  const analyticsBudget = createAnalyticsBudget();
   let controllerAnalyticsEvents;
   try {
-    controllerAnalyticsEvents = await readControllerAnalyticsEvents(rpc, manifest, blockNumberHex, findings);
+    controllerAnalyticsEvents = await readControllerAnalyticsEvents(rpc, manifest, blockNumberHex, findings, analyticsBudget);
   } catch (error) {
     addFinding(findings, "warning", "CONTROLLER_ANALYTICS_EVENTS_UNAVAILABLE", "controller.analyticsEvents", "bounded RPC event scan", error.message);
   }
@@ -1563,7 +1652,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (!controllerAnalyticsEvents) throw new Error("Controller analytics event scan was unavailable");
     if (args.block !== undefined) throw new Error("Explorer address transaction pages are head-indexed; exact historical analytics requires a block-indexed source");
     const explorer = new ExplorerClient(manifest.network.explorerApiUrl);
-    analytics = await readAnalytics(rpc, explorer, manifest, block, callTag, pools, controllerState, controllerAnalyticsEvents, lpPositions, findings);
+    analytics = await readAnalytics(rpc, explorer, manifest, block, callTag, pools, controllerState, controllerAnalyticsEvents, lpPositions, findings, analyticsBudget);
   } catch (error) {
     analytics = unavailableAnalytics(manifest, block, new Date().toISOString(), error.message);
     addFinding(findings, "warning", "ANALYTICS_UNAVAILABLE", "analytics", "complete bounded Explorer/RPC reconciliation", error.message);

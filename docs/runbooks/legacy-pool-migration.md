@@ -14,6 +14,8 @@ The RPC portion performs only `eth_chainId`, `eth_blockNumber`,
 address-transaction and per-transaction token-transfer endpoints for the
 fixed Controller plus ten legacy pool addresses. It has no signer,
 private-key, token-transfer, governance, pause, or deployment capability.
+Production Explorer requests are pinned to `https://mainnet.vinuexplorer.org`;
+HTTP is accepted only for localhost test fixtures.
 
 When `analytics.availability` is `AVAILABLE`, the report has exhausted and
 schema-validated each bounded address page through the resolved current head.
@@ -31,12 +33,19 @@ zero `rewardSupply()` read, and zero-valued `Reward` events; the report emits
 that as an explicit proof rather than an inferred missing value.
 
 The Explorer index is deliberately bounded (16 pages, 1,000 transactions per
-address, 100 items per page, 2 MB response, and 64 KB calldata). A malformed,
-oversized, failed transfer/receipt read, unsupported historical block, or
-provider failure returns `analytics.availability: "UNAVAILABLE"`; unavailable
+address, 100 items per page, 2 MB response, and 64 KB calldata). A single
+reconciliation also has a 2,000-request and 120-second network budget. A
+malformed or oversized response, failed transfer/receipt read, unsupported
+historical block, or provider failure returns
+`analytics.availability: "UNAVAILABLE"`; unavailable
 metrics are omitted and never converted to zero. If the Explorer transfer
 endpoint fails, the reconciler uses read-only `trace_transaction` for the
 specific already-discovered transaction and fails closed if that also fails.
+Transfer rows must remain bound to their requested transaction, use the
+manifest token decimals, and fit uint256 raw-value bounds; duplicate inventory
+hashes and malformed Controller log metadata also fail closed.
+Missing or invalid Explorer configuration is represented as `UNAVAILABLE`
+without echoing the rejected URL.
 The existing RPC state/event reconciliation remains independent of this
 external index. This slice intentionally has a `ponytail:` ceiling at the
 manifest's fixed legacy address set and VinuExplorer v2 schema; a new
@@ -49,6 +58,11 @@ event totals and the exact current LP positions known by the reconciler; a
 future deployment or a provider that cannot exhaust the fixed address pages
 requires an independently reviewed archive/event source before declaring
 claimable residuals settled.
+
+For a mature current LP owner with non-empty `eth_getCode` at the pinned report
+block, the reconciler does not forge a direct `from` address to prove an exit.
+It reports exit reachability as unavailable and requires the owner contract's
+actual executor path to be verified separately.
 
 ## Known legacy hazards
 
