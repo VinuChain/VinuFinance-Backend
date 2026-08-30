@@ -127,7 +127,21 @@ REPORT_GAS=true npx hardhat test
 ### Run with Coverage
 
 ```bash
-npx hardhat coverage
+yarn coverage
+yarn coverage:gate
+```
+
+`yarn coverage:gate` reads `coverage/coverage-final.json` and checks the
+executable timestamp-test wrappers generated as `BasePool_parsed.sol` and
+`Controller_parsed.sol`; the raw source entries are not substituted for those
+wrappers. The gate requires at least 90% statement and line coverage for those
+two core contracts, and at least 85% for `EmergencyWithdrawal` and `MultiClaim`.
+
+Check the deterministic Foundry gas baseline with the same test selection used
+in CI:
+
+```bash
+forge snapshot --check .gas-snapshot --match-path "test/foundry/*.t.sol"
 ```
 
 ## Local Blockchain

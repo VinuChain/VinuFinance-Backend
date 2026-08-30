@@ -295,6 +295,10 @@ describe('test BasePool', function () {
                 ]
             )
 
+            await checkQuery('getRateParams', [], [
+                LIQUIDITY_BND_1, LIQUIDITY_BND_2, R1, R2
+            ])
+
             /*await checkEvents([{
                 loanCcyToken : LOAN_CCY_TOKEN,
                 collCcyToken : COLL_CCY_TOKEN,
@@ -3320,6 +3324,8 @@ describe('test BasePool', function () {
 
                     // Proposal received 100 votes and wasn't executed
                     await checkQuery('getProposal', [0], [contract.address, String(Actions.Pause), '100', ZERO_ADDRESS, false, '150'], controllerContract)
+                    await checkQuery('getProposalVotes', [0, alice.address], [100], controllerContract)
+                    await checkQuery('getProposalVotes', [0, bob.address], [0], controllerContract)
                 })
 
                 it('votes on multiple proposals', async function () {
@@ -5455,6 +5461,44 @@ describe('test BasePool', function () {
                 expect(await loanCcyTokenContract.balanceOf(alice.address)).to.be.deep.equal(String(8000 - liquidity))
             })
 
+            it('transfers non-reinvested claims with exact token deltas', async function () {
+                await setTime(0, contract)
+                const multiclaimContract = await multiclaimContractBlueprint.deploy()
+                const [alice, bob] = await newUsers(
+                    [[LOAN_CCY_TOKEN, 8000]],
+                    [[LOAN_CCY_TOKEN, 12000], [COLL_CCY_TOKEN, 8000]],
+                )
+
+                await contract.connect(alice).setApprovals(
+                    multiclaimContract.address,
+                    approvalBits(['addLiquidity', 'claim']),
+                )
+                await contract.connect(alice).addLiquidity(alice.address, 8000, 150, 0)
+
+                await setTime(1, contract)
+                await contract.connect(bob).borrow(
+                    bob.address,
+                    500,
+                    200,
+                    10000,
+                    150,
+                    0,
+                )
+
+                await setTime(2, contract)
+                await contract.connect(bob).repay(1, bob.address)
+
+                const before = await loanCcyTokenContract.balanceOf(alice.address)
+                await multiclaimContract.connect(alice).claimMultiple(
+                    contract.address,
+                    [[1]],
+                    [false],
+                    150,
+                )
+
+                expect((await loanCcyTokenContract.balanceOf(alice.address)).sub(before)).to.equal(582)
+            })
+
             it('fails to claim a loan with mismatched sizes', async function () {
                 await setTime(0, contract)
                 const multiclaimContract = await multiclaimContractBlueprint.deploy()
@@ -6403,6 +6447,42 @@ describe('test BasePool', function () {
                 REWARD_COEFFICIENT
             )).to.be.rejectedWith('Invalid Controller.')
         })
+
+        it('keeps failed revenue deposits retryable', async function () {
+            const mockFakeControllerBlueprint = await hre.ethers.getContractFactory('MockFakeController')
+            const mockFakeControllerContract = await mockFakeControllerBlueprint.deploy()
+            const fakePool = await contractBlueprint.deploy(
+                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
+                DECIMALS,
+                LOAN_TENOR,
+                MAX_LOAN_PER_COLL,
+                [R1, R2],
+                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
+                MIN_LOAN,
+                MONE.div(100),
+                MIN_LIQUIDITY,
+                mockFakeControllerContract.address,
+                REWARD_COEFFICIENT,
+            )
+
+            const [alice, bob] = await newUsers(
+                [[LOAN_CCY_TOKEN, 8000]],
+                [[LOAN_CCY_TOKEN, 8000], [COLL_CCY_TOKEN, 8000]],
+            )
+            await loanCcyTokenContract.connect(alice).approve(fakePool.address, 8000)
+            await collCcyTokenContract.connect(bob).approve(fakePool.address, 500)
+
+            await setTime(0, fakePool)
+            await fakePool.connect(alice).addLiquidity(alice.address, 8000, 150, 0)
+            await setTime(1, fakePool)
+            await fakePool.connect(bob).borrow(bob.address, 500, 200, 10000, 150, 0)
+
+            const pending = await fakePool.pendingRevenue(COLL_CCY_TOKEN)
+            expect(pending).to.be.gt(0)
+            expect(await fakePool.callStatic.flushPendingRevenue(COLL_CCY_TOKEN, pending)).to.equal(0)
+            await fakePool.flushPendingRevenue(COLL_CCY_TOKEN, pending)
+            expect(await fakePool.pendingRevenue(COLL_CCY_TOKEN)).to.equal(pending)
+        })
     })
 
     describe('reward requests', function () {
@@ -6509,6 +6589,31 @@ describe('test BasePool', function () {
             await checkQuery('lastTrackedLiquidity', [alice.address], [liquidity3])
             
             await checkQuery('rewardBalance', [alice.address], [reward1 + reward2 + reward3], controllerContract)
+        })
+
+        it('retries partially funded reward debt through the exact controller path', async function () {
+            const [alice] = await newUsers([[LOAN_CCY_TOKEN, 100000]])
+
+            await setTime(1)
+            await contract.connect(alice).addLiquidity(alice.address, 8000, 10000, 0)
+            await setTime(4294967295)
+            await contract.connect(alice).forceRewardUpdate(alice.address)
+
+            const debtBefore = await contract.pendingRewardDebt(alice.address)
+            expect(debtBefore).to.be.gt(0)
+
+            const topUp = BigNumber.from(1000)
+            await voteTokenContract.connect(deployer).mint(topUp)
+            await voteTokenContract.connect(deployer).approve(controllerContract.address, topUp)
+            await controllerContract.connect(deployer).depositRewardSupply(topUp)
+
+            const rewardBefore = await controllerContract.rewardBalance(alice.address)
+            const credited = await contract.callStatic.retryPendingReward(alice.address, topUp)
+            expect(credited).to.equal(topUp)
+            await contract.retryPendingReward(alice.address, topUp)
+
+            expect(await contract.pendingRewardDebt(alice.address)).to.equal(debtBefore.sub(topUp))
+            expect(await controllerContract.rewardBalance(alice.address)).to.equal(rewardBefore.add(topUp))
         })
 
         it('checks that rewards are distributed correctly with removeLiquidity', async function () {

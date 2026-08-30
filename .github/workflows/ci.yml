@@ -53,6 +53,12 @@ jobs:
         if: matrix.reward_coefficient == '1000000000000000'
         run: yarn test:deployment
 
+      - name: Production coverage and gate
+        if: matrix.reward_coefficient == '1000000000000000'
+        env:
+          REWARD_COEFFICIENT: ${{ matrix.reward_coefficient }}
+        run: yarn coverage && yarn coverage:gate
+
   # Dependency audit gate. Runtime dependencies are audited separately from
   # the complete toolchain graph; the latter has a small, exact allowlist in
   # scripts/audit_gate.js for upstream Hardhat 2 / Ethers 5 constraints.
@@ -100,6 +106,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
 
       - uses: actions/setup-node@v6
         with:
@@ -114,6 +122,9 @@ jobs:
 
       - name: Run reward invariant / property tests
         run: forge test --match-path "test/foundry/*.t.sol" -vv
+
+      - name: Check gas regression snapshot
+        run: forge snapshot --check .gas-snapshot --match-path "test/foundry/*.t.sol"
 
       - name: Verify compiler settings and deployed runtime bytecode
         run: npm run verify:compiler
