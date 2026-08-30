@@ -46,6 +46,42 @@ jobs:
           REWARD_COEFFICIENT: ${{ matrix.reward_coefficient }}
         run: npm test
 
+  # Dependency audit gate. Runtime dependencies are audited separately from
+  # the complete toolchain graph; the latter has a small, exact allowlist in
+  # scripts/audit_gate.js for upstream Hardhat 2 / Ethers 5 constraints.
+  dependency-audit:
+    name: dependency-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Validate dependency tree
+        run: yarn check --verify-tree
+
+      - name: Validate VinuExplorer chain registration (no submission)
+        run: yarn verify:network
+
+      - name: Audit production dependency graph
+        run: |
+          set +e
+          yarn audit --groups dependencies --json > "$RUNNER_TEMP/yarn-audit-production.jsonl"
+          set -e
+          node scripts/audit_gate.js "$RUNNER_TEMP/yarn-audit-production.jsonl" production
+
+      - name: Audit full dependency graph with documented tool exceptions
+        run: |
+          set +e
+          yarn audit --json > "$RUNNER_TEMP/yarn-audit-full.jsonl"
+          set -e
+          node scripts/audit_gate.js "$RUNNER_TEMP/yarn-audit-full.jsonl" full
+
   # Security invariant / property tests for the reward bookkeeping (Foundry).
   # forge-std is installed explicitly here (it is gitignored, not vendored) so
   # the harness is reproducible on a clean runner.

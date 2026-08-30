@@ -528,6 +528,8 @@ async function main() {
     console.log("=== POST-DEPLOY CHECKLIST (manual) ===")
     console.log("[ ] Commit/record deployments/vinuchain.json")
     console.log("[ ] Submit exact deployment-era standard JSON source + constructor args to the explorer")
+    console.log("[ ] Validate VinuExplorer first: yarn verify:network")
+    console.log("[ ] Verify each contract: npx hardhat verify --network vinuchain <addr> <args>")
     console.log("[ ] Update vinuchain-lists + frontend config with the new addresses")
     console.log(`[ ] Transfer Controller veto holder to the multisig (currently ${VETO_HOLDER})`)
     console.log("[ ] Governance bootstrap: stake VINU, create + vote whitelist proposal, veto-approve")

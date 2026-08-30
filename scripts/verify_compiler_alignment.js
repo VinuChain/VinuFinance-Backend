@@ -4,8 +4,8 @@
  * Compiler/toolchain gate for the two supported build paths.
  *
  * Hardhat build-info is the authoritative record of the Solidity compiler
- * input. Foundry's resolved configuration is represented by foundry.toml and
- * is exercised immediately before this script by `forge build --force`.
+ * input. Foundry's declarative settings are checked against its resolved
+ * `forge config --json` output, then the generated artifacts are compared.
  * Runtime bytecode is compared after removing the compiler metadata trailer;
  * metadata contains source-path hashes that differ between the two tools.
  */
@@ -13,6 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { execFileSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
 const expected = {
@@ -34,6 +35,19 @@ function assert(condition, message) {
 function readJson(file) {
   const resolved = path.isAbsolute(file) ? file : path.join(root, file);
   return JSON.parse(fs.readFileSync(resolved, "utf8"));
+}
+
+function readResolvedForgeConfig() {
+  try {
+    const output = execFileSync("forge", ["config", "--json"], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return JSON.parse(output);
+  } catch (error) {
+    fail("could not read resolved forge config from `forge config --json`: " + error.message);
+  }
 }
 
 function readTomlValue(source, key) {
@@ -99,14 +113,7 @@ assert(readTomlBoolean(foundryToml, "optimizer"), "foundry.toml optimizer must b
 assert(readTomlNumber(foundryToml, "optimizer_runs") === expected.optimizerRuns, "foundry.toml optimizer_runs does not match");
 assert(/optimizer_details\s*=\s*\{[^}]*\byul\s*=\s*true\b[^}]*\}/s.test(foundryToml), "foundry.toml optimizer_details.yul must be true");
 
-const forgeConfigFile = process.argv[2] || process.env.FOUNDRY_CONFIG_JSON;
-assert(forgeConfigFile, "pass the output of `forge config --json` as the first argument");
-let forgeConfig;
-try {
-  forgeConfig = readJson(forgeConfigFile);
-} catch (error) {
-  fail(`could not read resolved forge config ${forgeConfigFile}: ${error.message}`);
-}
+const forgeConfig = readResolvedForgeConfig();
 assert(forgeConfig.solc === expected.solc, `resolved Foundry solc does not match ${expected.solc}`);
 assert(forgeConfig.evm_version === expected.evmVersion, `resolved Foundry evm_version does not match ${expected.evmVersion}`);
 assert(forgeConfig.optimizer === expected.optimizer, "resolved Foundry optimizer must be enabled");

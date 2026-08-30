@@ -6,10 +6,13 @@
   "repository": "https://github.com/VinuChain/VinuFinance-Backend",
   "author": "Samuele Marro <marrosamuele@gmail.com>",
   "license": "MIT",
+  "packageManager": "yarn@1.22.22",
   "engines": {
     "node": ">=20.0.0"
   },
-  "dependencies": {},
+  "dependencies": {
+    "ethers": "^5.8.0"
+  },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^1.0.6",
     "@nomicfoundation/hardhat-network-helpers": "^1.1.2",
@@ -32,14 +35,13 @@
     "chai-like": "^1.1.1",
     "chai-things": "^0.2.0",
     "dotenv": "^17.4.2",
-    "ethers": "^5.8.0",
     "hardhat": "^2.29.1",
     "hardhat-contract-sizer": "^2.10.1",
     "hardhat-gas-reporter": "^2.3.0",
     "mocha": "^11.8.0",
     "solidity-coverage": "^0.8.17",
     "typechain": "^8.3.2",
-    "typescript": "^4.9.5",
+    "typescript": "^5.9.3",
     "solidity-docgen": "^0.6.0-beta.36",
     "ts-node": "^10.9.2"
   },
@@ -59,11 +61,19 @@
     "**/secp256k1": "4.0.4",
     "**/sha.js": "2.4.12",
     "**/sc-istanbul/**/js-yaml": "3.15.2",
+    "**/table/ajv": "8.20.0",
+    "**/elliptic/bn.js": "4.12.5",
+    "**/ethereumjs-util/bn.js": "5.2.5",
+    "**/rlp/bn.js": "5.2.5",
+    "**/@ethersproject/bignumber/bn.js": "5.2.5",
+    "**/@ethersproject/signing-key/bn.js": "5.2.5",
+    "**/web3-utils/bn.js": "5.2.5",
     "solidity-coverage/semver": "7.5.2",
     "hardhat/semver": "6.3.1",
     "hardhat/solc/semver": "5.7.2",
     "hardhat/ws": "7.5.13",
-    "ts-node/diff": "4.0.4"
+    "ts-node/diff": "4.0.4",
+    "**/optionator/word-wrap": "1.2.5"
   },
   "scripts": {
     "test_legacy": "./node_modules/.bin/mocha --full-trace --config ./test/mocharc.nightly.json",
@@ -73,6 +83,8 @@
     "test:foundry": "forge test --match-path \"test/foundry/*.t.sol\" -vv",
     "reconcile:legacy": "node scripts/reconcile-legacy.mjs",
     "test:reconcile:legacy": "node scripts/reconcile-legacy.test.mjs",
-    "verify:compiler": "npx hardhat clean && npx hardhat compile --force && forge build --force && forge config --json > /tmp/vinufinance-forge-config.json && node scripts/verify_compiler_alignment.js /tmp/vinufinance-forge-config.json"
+    "verify:compiler": "yarn hardhat clean && yarn hardhat compile --force && forge build --force && node scripts/verify_compiler_alignment.js",
+    "verify:network": "node scripts/verify_vinuexplorer_config.js && yarn hardhat verify --list-networks",
+    "audit:gate": "yarn audit --json | node scripts/audit_gate.js"
   }
 }

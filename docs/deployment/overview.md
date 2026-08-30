@@ -49,7 +49,7 @@ Contracts must be deployed in a specific order due to dependencies:
 
 - [ ] RPC URL configured
 - [ ] Deployer wallet funded
-- [ ] Block explorer API key ready
+- [ ] VinuExplorer URL/API checked (`https://mainnet.vinuexplorer.org`)
 - [ ] Gas price oracle checked
 
 ## Controller Deployment
@@ -187,6 +187,11 @@ await emergency.deployed();
 - Use optimizer with high runs (200+)
 - Consider batch deployment scripts
 
+The repository's release build is pinned to solc `0.8.36`, EVM target
+`cancun`, optimizer runs `200`, and Yul enabled in both Hardhat and Foundry.
+Run `yarn verify:compiler` to compare the resolved settings and deployed
+bytecode before deployment.
+
 ## Verification
 
 ### Verify on Block Explorer
@@ -197,14 +202,45 @@ or the current checkout to verify an immutable legacy address; use
 [`legacy-vinuchain.md`](legacy-vinuchain.md) for that release record. The
 original legacy artifact and metadata remain an external prerequisite for any
 pool source verification.
+VinuChain mainnet (chain ID 207) uses VinuExplorer's public Blockscout-
+compatible API. The repository registers the API at
+`https://mainnet.vinuexplorer.org/api` and the browser at
+`https://mainnet.vinuexplorer.org`; no explorer API key is required. Check the
+registration without submitting a verification request:
+
+```bash
+yarn verify:network
+```
+
+After reviewing the deployment address and constructor arguments, submit the
+verification through the Blockscout provider:
+
+```bash
+# Controller
+npx hardhat verify --network vinuchain \
+    CONTROLLER_ADDRESS \
+    "VOTE_TOKEN_ADDRESS" \
+    "VETO_HOLDER_ADDRESS"
+
+# BasePool
+npx hardhat verify --network vinuchain \
+    POOL_ADDRESS \
+    "LOAN_TOKEN" "COLL_TOKEN" \
+    "LOAN_TENOR" "MAX_LOAN_PER_COLL" \
+    "R1" "R2" \
+    "LIQUIDITY_BND1" "LIQUIDITY_BND2" \
+    "MIN_LOAN" "CREATOR_FEE" \
+    "CONTROLLER" "REWARD_COEFF"
+```
 
 ### Manual Verification
 
 If automatic verification fails:
 
 1. Flatten contract source
-2. Upload manually to explorer
-3. Match compiler settings exactly
+2. Open `https://mainnet.vinuexplorer.org` and choose **Verify Contract**
+3. Upload the standard JSON input from `artifacts/build-info/`
+4. Match solc `0.8.36`, EVM `cancun`, optimizer runs `200`, and Yul enabled
 
 ## Post-Deployment Tasks
 

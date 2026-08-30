@@ -24,7 +24,7 @@ This guide covers VinuFinance deployment specifics for VinuChain.
 ### Hardhat Config
 
 ```javascript
-// hardhat.config.js
+// hardhat.config.ts (simplified network excerpt)
 module.exports = {
     networks: {
         vinuchain: {
@@ -37,6 +37,11 @@ module.exports = {
 };
 ```
 
+Build and deploy from the pinned toolchain: solc `0.8.36`, EVM target
+`cancun`, optimizer enabled with `200` runs, and Yul enabled. These settings
+are also pinned in `foundry.toml`; run `yarn verify:compiler` before a release
+to compare both artifact pipelines.
+
 ### MetaMask Setup
 
 Add VinuChain to MetaMask:
@@ -47,7 +52,7 @@ Add VinuChain to MetaMask:
 | RPC URL | https://rpc.vinuchain.org |
 | Chain ID | 207 |
 | Symbol | VC |
-| Explorer | https://vinuexplorer.org |
+| Explorer | https://mainnet.vinuexplorer.org |
 
 ## Token Addresses
 
@@ -188,6 +193,88 @@ and metadata remain unavailable, so deployed legacy pool source is unverified.
 Only the original operator, with that original compiler input and constructor
 arguments, can submit a valid explorer verification request. Do not submit the
 current checkout’s artifacts or copied illustrative values for those addresses.
+### Current deployment verification
+VinuExplorer exposes the Blockscout-compatible Etherscan API used by this
+repository's `@nomicfoundation/hardhat-verify` configuration:
+
+- Browser: `https://mainnet.vinuexplorer.org`
+- API: `https://mainnet.vinuexplorer.org/api`
+- Chain ID: `207` (`vinuchain`)
+- API key: not required for the Blockscout provider
+
+Validate the custom-chain registration and list-networks output without
+submitting a verification request:
+
+```bash
+yarn verify:network
+```
+
+The endpoint can be checked read-only before any verification submission:
+
+```bash
+curl --fail --silent 'https://mainnet.vinuexplorer.org/api?module=block&action=eth_block_number'
+curl --fail --silent 'https://mainnet.vinuexplorer.org/api?module=contract&action=getsourcecode&address=0x0000000000000000000000000000000000000000'
+```
+
+### Using Hardhat
+
+For contracts with array parameters, create a constructor arguments file:
+
+**1. Controller Verification**
+
+```bash
+# Controller has 8 parameters (no arrays)
+npx hardhat verify --network vinuchain \
+    CONTROLLER_ADDRESS \
+    "VINU_ADDRESS" \
+    5000 \
+    5000 \
+    5000 \
+    5000 \
+    86400 \
+    604800 \
+    "VETO_HOLDER_ADDRESS"
+```
+
+**2. BasePool Verification**
+
+Since BasePool uses array parameters, create a file `arguments.js`:
+
+```javascript
+// arguments.js
+module.exports = [
+    ["USDT_ADDRESS", "WVC_ADDRESS"],           // _tokens array
+    18,                                         // _collTokenDecimals
+    2592000,                                   // _loanTenor
+    "500000000000000000",                      // _maxLoanPerColl
+    ["150000000000000000", "20000000000000000"], // _rs array [r1, r2] = [15%, 2%] (r1 > r2)
+    ["10000000000", "100000000000"],           // _liquidityBnds array
+    "100000000",                               // _minLoan
+    "10000000000000000",                       // _creatorFee
+    "1000000000",                              // _minLiquidity
+    "CONTROLLER_ADDRESS",                      // _poolController
+    "1000000000000000000"                      // _rewardCoefficient
+];
+```
+
+Then verify:
+
+```bash
+npx hardhat verify --network vinuchain \
+    --constructor-args arguments.js \
+    POOL_ADDRESS
+```
+
+### Manual Verification
+
+If automatic verification fails:
+
+1. Go to [VinuExplorer](https://mainnet.vinuexplorer.org)
+2. Navigate to contract address
+3. Click "Verify Contract"
+4. Select "Solidity (Standard JSON-Input)"
+5. Upload the matching build input from `artifacts/build-info/`
+6. Match solc `0.8.36`, EVM `cancun`, optimizer runs `200`, and Yul enabled
 
 ## Gas Costs on VinuChain
 

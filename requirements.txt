@@ -1,6 +1,10 @@
-crytic-compile>=0.3.7
-graphviz==0.19.2
-prettytable==3.2.0
-pysha3==1.0.2
-slither-analyzer>=0.10.0
-wcwidth==0.2.5
+# Match the Python toolchain used by the Slither CI action. Exact pins keep
+# local static-analysis runs reproducible on Python 3.10+ (including 3.12).
+crytic-compile==0.3.11
+graphviz==0.21
+prettytable==3.17.0
+slither-analyzer==0.11.4
+wcwidth==0.8.3
+
+# pysha3==1.0.2 was an unused legacy requirement. It has no Python 3.12 wheel;
+# Slither uses pycryptodome through its pinned crytic-compile dependency.

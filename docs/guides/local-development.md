@@ -4,7 +4,7 @@ This guide explains how to set up a local development environment for VinuFinanc
 
 ## Prerequisites
 
-- Node.js v20+ and npm
+- Node.js v20+ and Corepack/Yarn 1.22.22
 - Git
 - A code editor (VS Code recommended)
 
@@ -20,7 +20,24 @@ cd VinuFinance-VinuChain
 ### 2. Install Dependencies
 
 ```bash
-npm install
+corepack enable
+yarn install --frozen-lockfile
+```
+
+`package.json#packageManager` pins Yarn 1.22.22. Keep the lockfile frozen in
+local and CI installs so compiler and plugin versions cannot drift.
+
+The Hardhat and Foundry compiler settings are intentionally identical:
+**solc 0.8.36**, **EVM Cancun**, optimizer enabled with **200 runs**, and **Yul
+enabled**. Run `yarn verify:compiler` to rebuild both artifacts and compare
+resolved settings plus metadata-stripped init/runtime bytecode for all four
+deployed contracts.
+
+The Foundry harness uses a pinned forge-std revision:
+
+```bash
+forge install --no-git foundry-rs/forge-std@rev=bf647bd6046f2f7da30d0c2bf435e5c76a780c1b
+yarn test:foundry
 ```
 
 ### 3. Environment Configuration
@@ -35,8 +52,7 @@ TESTNET_RPC_URL=https://vinufoundation-rpc.com
 # Private key for deployment (without 0x prefix)
 PRIVATE_KEY=your_private_key_here
 
-# Optional: Block explorer API key for verification
-EXPLORER_API_KEY=your_api_key
+# VinuExplorer uses its public Blockscout-compatible API; no API key is needed.
 ```
 
 ## Project Structure
@@ -52,7 +68,7 @@ VinuFinance-VinuChain/
 ├── scripts/               # Deployment scripts
 ├── test/                  # Test files
 ├── docs/                  # Documentation
-├── hardhat.config.js      # Hardhat configuration
+├── hardhat.config.ts      # Hardhat configuration
 └── package.json
 ```
 
@@ -278,7 +294,17 @@ npx hardhat run scripts/deploy.js --network vinuchain
 
 ## Contract Verification
 
-After deployment, verify on block explorer:
+After deployment, verify on VinuExplorer's Blockscout-compatible API. The
+Hardhat config registers chain 207 with the documented API and browser URLs;
+the command below submits a verification request, so run it only after
+checking the deployment address and constructor arguments. First validate the
+registration without making a submission:
+
+```bash
+yarn verify:network
+```
+
+Then, for each deployed contract:
 
 ```bash
 npx hardhat verify --network vinuchain CONTRACT_ADDRESS constructor_args...
@@ -327,7 +353,7 @@ npx hardhat compile --force
 ### Update Dependencies
 
 ```bash
-npm update
+yarn install --frozen-lockfile
 ```
 
 ### Check Contract Sizes
@@ -349,7 +375,7 @@ npx hardhat size-contracts
 
 ```json
 {
-    "solidity.compileUsingRemoteVersion": "v0.8.19",
+    "solidity.compileUsingRemoteVersion": "v0.8.36",
     "editor.formatOnSave": true
 }
 ```
@@ -358,7 +384,7 @@ npx hardhat size-contracts
 
 ### "Contract size exceeds limit"
 
-- Enable optimizer in hardhat.config.js
+- Enable optimizer in hardhat.config.ts
 - Split into smaller contracts
 - Remove unnecessary code
 

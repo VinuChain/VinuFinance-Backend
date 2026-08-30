@@ -40,3 +40,4 @@
 
 * [Security](resources/security.md)
 * [FAQ](resources/faq.md)
+* [Dependency audit policy](dependency-audit.md)
