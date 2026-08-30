@@ -92,30 +92,18 @@ contract RevenueClaimTest is Test {
         assertGt(claimed, 0, "claimedRevenue stayed zero");
     }
 
-    function test_feeOnTransferRevenueClaimsActualReceivedAmount() public {
+    function test_feeOnTransferRevenueIsRejected() public {
         FeeOnTransferToken feeToken = new FeeOnTransferToken();
         feeToken.mintTo(alice, 1_000);
 
         vm.startPrank(alice);
         feeToken.approve(address(controller), type(uint256).max);
         controller.depositVoteToken(1_000_000); // account snapshot 0, balance > 0
+        vm.expectRevert(bytes("Unsupported token behavior."));
         controller.depositRevenue(IERC20(address(feeToken)), 100); // first token snapshot
         vm.stopPrank();
 
-        assertEq(feeToken.balanceOf(address(controller)), 90, "controller should receive net revenue");
-
-        (, uint256 collected, , , ) = controller.getTokenSnapshot(IERC20(address(feeToken)), 0);
-        assertEq(collected, 90, "snapshot should account for net received revenue");
-
-        uint256 before = feeToken.balanceOf(alice);
-        vm.prank(alice);
-        controller.claimToken(IERC20(address(feeToken)), 0, 0);
-        uint256 paid = feeToken.balanceOf(alice) - before;
-
-        assertEq(paid, 81, "claim transfer applies the token fee once");
-        (, uint256 collectedAfterClaim, uint256 claimed, , ) = controller.getTokenSnapshot(IERC20(address(feeToken)), 0);
-        assertEq(collectedAfterClaim, 90, "collected accounting should stay at net deposit");
-        assertEq(claimed, 90, "claimed accounting should settle the gross net deposit");
-        assertEq(feeToken.balanceOf(address(controller)), 0, "controller should not retain revenue dust");
+        assertEq(feeToken.balanceOf(address(controller)), 0, "unsupported deposit must not retain tokens");
+        assertEq(controller.numTokenSnapshots(IERC20(address(feeToken))), 0, "rejected deposit must not snapshot");
     }
 }

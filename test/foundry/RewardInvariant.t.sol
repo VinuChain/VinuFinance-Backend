@@ -17,6 +17,14 @@ contract TestToken is ERC20 {
     }
 }
 
+contract ZeroDecimalTestToken is TestToken {
+    constructor() TestToken() {}
+
+    function decimals() public pure override returns (uint8) {
+        return 0;
+    }
+}
+
 /**
  * @title RewardInvariantTest
  * @notice Foundry stateful invariant test for audit finding S1 — the unproven
@@ -31,7 +39,7 @@ contract RewardInvariantTest is Test {
     BasePool pool;
     MockRewardController controller;
     TestToken loanCcy;
-    TestToken collCcy;
+    ZeroDecimalTestToken collCcy;
     RewardInvariantHandler handler;
 
     // Mirror test/pool.spec.ts constants.
@@ -56,7 +64,7 @@ contract RewardInvariantTest is Test {
         vm.warp(1_000_000);
 
         loanCcy = new TestToken();
-        collCcy = new TestToken();
+        collCcy = new ZeroDecimalTestToken();
         controller = new MockRewardController();
         // Fund the reward supply generously so distributions are real but the
         // saturating clamp in requestTokenDistribution is rarely hit.

@@ -104,11 +104,14 @@ contract Controller is IController, ReentrancyGuard {
         uint256 _lockPeriod,
         address _vetoHolder
     ) {
+        require(address(_voteToken) != address(0), "Invalid vote token.");
+        require(address(_voteToken).code.length > 0, "Vote token must be a contract.");
         require(_pauseThreshold > 0 && _pauseThreshold <= THRESHOLD_BASE, "_pauseThreshold must be in (0, THRESHOLD_BASE].");
         require(_unpauseThreshold > 0 && _unpauseThreshold <= THRESHOLD_BASE, "_unpauseThreshold must be in (0, THRESHOLD_BASE].");
         require(_whitelistThreshold > 0 && _whitelistThreshold <= THRESHOLD_BASE, "_whitelistThreshold must be in (0, THRESHOLD_BASE].");
         require(_dewhitelistThreshold > 0 && _dewhitelistThreshold <= THRESHOLD_BASE, "_dewhitelistThreshold must be in (0, THRESHOLD_BASE].");
         require(_snapshotEvery > 0, "_snapshotEvery must be greater than 0.");
+        require(_vetoHolder != address(0), "Invalid veto holder.");
 
         voteToken = _voteToken;
 
@@ -132,11 +135,10 @@ contract Controller is IController, ReentrancyGuard {
      * @inheritdoc IController
      */
     function depositRevenue(IERC20 _token, uint256 _amount) external payable override nonReentrant {
-        uint256 balanceBefore = _token.balanceOf(address(this));
-        _token.safeTransferFrom(msg.sender, address(this), _amount);
-        uint256 received = _token.balanceOf(address(this)) - balanceBefore;
+        require(msg.value == 0, "Native value unsupported.");
+        _transferFromExact(_token, msg.sender, _amount);
 
-        currentRevenue[_token] += received;
+        currentRevenue[_token] += _amount;
         _checkTokenSnapshot(_token);
     }
 
@@ -269,7 +271,7 @@ contract Controller is IController, ReentrancyGuard {
         }
 
         uint256 absoluteThreshold = voteTokenTotalSupply * referenceThreshold / THRESHOLD_BASE;
-        if (proposals[_proposalIdx].totalVotes > absoluteThreshold) {
+        if (proposals[_proposalIdx].totalVotes >= absoluteThreshold) {
             if(
                 proposals[_proposalIdx].action == Action.WHITELIST &&
                 proposals[_proposalIdx].vetoApprover != vetoHolder
@@ -320,9 +322,9 @@ contract Controller is IController, ReentrancyGuard {
      * @param _amount Amount to deposit
      */
     function depositVoteToken(uint256 _amount) external payable nonReentrant {
+        require(msg.value == 0, "Native value unsupported.");
+        _transferFromExact(voteToken, msg.sender, _amount);
         _depositVoteToken(msg.sender, _amount);
-
-        voteToken.safeTransferFrom(msg.sender, address(this), _amount);
     }
 
     /**
@@ -345,7 +347,7 @@ contract Controller is IController, ReentrancyGuard {
 
         uint256 subTimestamp = _takeAccountSnapshot(msg.sender);
 
-        voteToken.safeTransfer(msg.sender, _amount);
+        _transferExact(voteToken, msg.sender, _amount);
 
         emit WithdrawnVoteToken(msg.sender, _amount, voteTokenBalance[msg.sender], voteTokenTotalSupply, subTimestamp);
     }
@@ -505,6 +507,10 @@ contract Controller is IController, ReentrancyGuard {
      * @param _accountSnapshotIdx Index of the account snapshot
      */
     function claimToken(IERC20 _token, uint256 _tokenSnapshotIdx, uint256 _accountSnapshotIdx) public nonReentrant {
+        _claimToken(_token, _tokenSnapshotIdx, _accountSnapshotIdx);
+    }
+
+    function _claimToken(IERC20 _token, uint256 _tokenSnapshotIdx, uint256 _accountSnapshotIdx) internal {
         require(_accountSnapshotIdx < numAccountSnapshots[msg.sender], "Invalid account snapshot idx.");
         require(_tokenSnapshotIdx < numTokenSnapshots[_token], "Invalid token snapshot idx.");
 
@@ -545,7 +551,7 @@ contract Controller is IController, ReentrancyGuard {
 
         tokenSnapshots[_token][_tokenSnapshotIdx].claimed[msg.sender] = true;
         tokenSnapshots[_token][_tokenSnapshotIdx].claimedRevenue += transferAmount;
-        _token.safeTransfer(msg.sender, transferAmount);
+        _transferExact(_token, msg.sender, transferAmount);
 
         emit TokenClaimed(_token, msg.sender, _tokenSnapshotIdx, _accountSnapshotIdx, transferAmount, tokenSnapshots[_token][_tokenSnapshotIdx].claimedRevenue);
     }
@@ -559,13 +565,13 @@ contract Controller is IController, ReentrancyGuard {
      * @param _tokenSnapshotIdxs Indexes of the token snapshots
      * @param _accountSnapshotIdxs Indexes of the account snapshots
      */
-    function claimMultiple(IERC20[] memory _tokens, uint256[] memory _tokenSnapshotIdxs, uint256[] memory _accountSnapshotIdxs) external {
+    function claimMultiple(IERC20[] memory _tokens, uint256[] memory _tokenSnapshotIdxs, uint256[] memory _accountSnapshotIdxs) external nonReentrant {
         require(_tokens.length == _tokenSnapshotIdxs.length, "_tokens and _tokenSnapshotIdxs must have the same length.");
         require(_tokens.length == _accountSnapshotIdxs.length, "_tokens and _accountSnapshotIdxs must have the same length.");
         require(_tokens.length > 0, "Arrays must have at least one element.");
 
         for (uint256 i = 0; i < _tokens.length; i++) {
-            claimToken(_tokens[i], _tokenSnapshotIdxs[i], _accountSnapshotIdxs[i]);
+            _claimToken(_tokens[i], _tokenSnapshotIdxs[i], _accountSnapshotIdxs[i]);
         }
     }
 
@@ -573,15 +579,15 @@ contract Controller is IController, ReentrancyGuard {
      * @notice Deposits the tokens that will be used as reward
      */
     function depositRewardSupply(uint256 _amount) payable external nonReentrant {
+        require(msg.value == 0, "Native value unsupported.");
+        _transferFromExact(voteToken, msg.sender, _amount);
         rewardSupply += _amount;
-
-        voteToken.safeTransferFrom(msg.sender, address(this), _amount);
     }
 
     /**
      * @inheritdoc IController
      */
-    function requestTokenDistribution(address _account, uint128 _liquidity, uint32 _duration, uint96 _rewardCoefficient) external override {
+    function requestTokenDistribution(address _account, uint128 _liquidity, uint32 _duration, uint96 _rewardCoefficient) external override nonReentrant {
         // This flag allows simulating a function call failure in the contract due to out-of-quota
         // TMP-MAYBE-DISABLE
         
@@ -621,7 +627,7 @@ contract Controller is IController, ReentrancyGuard {
         if (_deposit) {
             _depositVoteToken(msg.sender, amount);
         } else {
-            voteToken.safeTransfer(msg.sender, amount);
+            _transferExact(voteToken, msg.sender, amount);
         }
     }
 
@@ -674,6 +680,32 @@ contract Controller is IController, ReentrancyGuard {
         vetoHolder = _newHolder;
 
         emit VetoPowerTransfer(oldHolder, _newHolder);
+    }
+
+    function _transferFromExact(IERC20 _token, address _from, uint256 _amount) internal {
+        uint256 fromBefore = _token.balanceOf(_from);
+        uint256 controllerBefore = _token.balanceOf(address(this));
+        _token.safeTransferFrom(_from, address(this), _amount);
+        uint256 fromAfter = _token.balanceOf(_from);
+        uint256 controllerAfter = _token.balanceOf(address(this));
+        require(
+            fromBefore >= fromAfter && fromBefore - fromAfter == _amount &&
+                controllerAfter >= controllerBefore && controllerAfter - controllerBefore == _amount,
+            "Unsupported token behavior."
+        );
+    }
+
+    function _transferExact(IERC20 _token, address _to, uint256 _amount) internal {
+        uint256 controllerBefore = _token.balanceOf(address(this));
+        uint256 recipientBefore = _token.balanceOf(_to);
+        _token.safeTransfer(_to, _amount);
+        uint256 controllerAfter = _token.balanceOf(address(this));
+        uint256 recipientAfter = _token.balanceOf(_to);
+        require(
+            controllerBefore >= controllerAfter && controllerBefore - controllerAfter == _amount &&
+                recipientAfter >= recipientBefore && recipientAfter - recipientBefore == _amount,
+            "Unsupported token behavior."
+        );
     }
 
     // The following is an instruction for the custom preprocessor implemented in unit tests

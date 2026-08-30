@@ -122,10 +122,21 @@ contract EmergencyWithdrawal is ReentrancyGuard {
         uint256 amountAfter = token.balanceOf(address(this));
 
         // Calculate the amount of tokens to transfer
+        require(amountAfter >= amountBefore, "Unsupported token behavior.");
         uint256 amount = amountAfter - amountBefore;
 
         // Transfer the tokens to the user
+        uint256 escrowBeforeTransfer = amountAfter;
+        uint256 userBefore = token.balanceOf(_onBehalfOf);
         token.safeTransfer(_onBehalfOf, amount);
+        uint256 escrowAfter = token.balanceOf(address(this));
+        uint256 userAfter = token.balanceOf(_onBehalfOf);
+        require(
+            amount == 0 ||
+                escrowBeforeTransfer >= escrowAfter && escrowBeforeTransfer - escrowAfter == amount &&
+                userAfter >= userBefore && userAfter - userBefore == amount,
+            "Unsupported token behavior."
+        );
 
         emit Withdrawal(_onBehalfOf, address(_pool), msg.sender, token, amount);
     }

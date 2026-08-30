@@ -53,17 +53,35 @@ contract MultiClaim is ReentrancyGuard {
 
         // Transfer the loan currency to the user
         uint256 loanCcyBalanceAfter = loanCcyToken.balanceOf(address(this));
-        uint256 loanCcyBalanceDiff = loanCcyBalanceAfter - loanCcyBalanceBefore;
+        uint256 loanCcyBalanceDiff = _exactDelta(loanCcyBalanceBefore, loanCcyBalanceAfter);
 
         // Transfer the collateral currency to the user
         uint256 collCcyBalanceAfter = collCcyToken.balanceOf(address(this));
-        uint256 collCcyBalanceDiff = collCcyBalanceAfter - collCcyBalanceBefore;
+        uint256 collCcyBalanceDiff = _exactDelta(collCcyBalanceBefore, collCcyBalanceAfter);
 
         if (loanCcyBalanceDiff > 0) {
-            loanCcyToken.safeTransfer(msg.sender, loanCcyBalanceDiff);
+            _transferExact(loanCcyToken, msg.sender, loanCcyBalanceDiff);
         }
         if (collCcyBalanceDiff > 0) {
-            collCcyToken.safeTransfer(msg.sender, collCcyBalanceDiff);
+            _transferExact(collCcyToken, msg.sender, collCcyBalanceDiff);
         }
+    }
+
+    function _exactDelta(uint256 _before, uint256 _after) internal pure returns (uint256) {
+        require(_after >= _before, "Unsupported token behavior.");
+        return _after - _before;
+    }
+
+    function _transferExact(IERC20 _token, address _to, uint256 _amount) internal {
+        uint256 contractBefore = _token.balanceOf(address(this));
+        uint256 recipientBefore = _token.balanceOf(_to);
+        _token.safeTransfer(_to, _amount);
+        uint256 contractAfter = _token.balanceOf(address(this));
+        uint256 recipientAfter = _token.balanceOf(_to);
+        require(
+            contractBefore >= contractAfter && contractBefore - contractAfter == _amount &&
+                recipientAfter >= recipientBefore && recipientAfter - recipientBefore == _amount,
+            "Unsupported token behavior."
+        );
     }
 }

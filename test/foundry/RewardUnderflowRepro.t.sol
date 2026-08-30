@@ -15,6 +15,12 @@ contract ReproToken is ERC20 {
     }
 }
 
+contract ReproCollateralToken is ReproToken {
+    function decimals() public pure override returns (uint8) {
+        return 0;
+    }
+}
+
 /**
  * @title RewardUnderflowReproTest
  * @notice DETERMINISTIC reproduction of audit finding S1: the reward-bookkeeping
@@ -66,7 +72,7 @@ contract RewardUnderflowReproTest is Test {
     BasePool pool;
     MockRewardController controller;
     ReproToken loanCcy;
-    ReproToken collCcy;
+    ReproCollateralToken collCcy;
 
     // Mirror test/pool.spec.ts constants.
     uint256 constant LOAN_TENOR = 86400;
@@ -88,7 +94,7 @@ contract RewardUnderflowReproTest is Test {
     function setUp() public {
         vm.warp(1_000_000);
         loanCcy = new ReproToken();
-        collCcy = new ReproToken();
+        collCcy = new ReproCollateralToken();
         controller = new MockRewardController();
         controller.setRewardSupply(type(uint128).max);
 

@@ -4,12 +4,14 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IBasePool} from "./interfaces/IBasePool.sol";
 import "./interfaces/IPausable.sol";
 import "./interfaces/IController.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract BasePool is IBasePool, Pausable, IPausable {
+contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     using SafeERC20 for IERC20;
 
     // Minimum period between adding liqudity and removing it, in seconds
@@ -17,6 +19,10 @@ contract BasePool is IBasePool, Pausable, IPausable {
 
     // Minimum loan tenor, in seconds
     uint256 constant MIN_TENOR = 86400;
+    // LoanInfo.expiry is uint32; larger tenors would truncate on borrow.
+    uint256 constant MAX_TIMESTAMP = type(uint32).max;
+    // Keep the exponent in loanTerms within the supported token-decimal range.
+    uint256 constant MAX_TOKEN_DECIMALS = 30;
     uint256 constant BASE = 10 ** 18;
 
     // Maximum creator fee, denominated in BASE
@@ -122,18 +128,27 @@ contract BasePool is IBasePool, Pausable, IPausable {
         require(_rs.length == 2, "Rs length must be 2.");
         require(_liquidityBnds.length == 2, "Liquidity bounds length must be 2.");
 
-        require(_poolController.supportsInterface(type(IController).interfaceId), "Invalid Controller.");
-
         require(_tokens[0] != _tokens[1], "Loan and collateral must not be the same.");
         if (address(_tokens[0]) == address(0) || address(_tokens[1]) == address(0))
             revert("Loan and collateral tokens must not be 0.");
+        require(address(_tokens[0]).code.length > 0, "Loan token must be a contract.");
+        require(address(_tokens[1]).code.length > 0, "Collateral token must be a contract.");
+        require(_readTokenDecimals(_tokens[0]) == 18, "Loan token decimals must be 18.");
+        require(_readTokenDecimals(_tokens[1]) == _collTokenDecimals, "Collateral decimals mismatch.");
+        require(address(_poolController) != address(0), "Invalid Controller.");
+        require(address(_poolController).code.length > 0, "Controller must be a contract.");
+        require(_poolController.supportsInterface(type(IController).interfaceId), "Invalid Controller.");
+        require(_collTokenDecimals <= MAX_TOKEN_DECIMALS, "Invalid collateral decimals.");
         require(_loanTenor >= MIN_TENOR, "Loan tenor must be at least MIN_TENOR.");
+        require(_loanTenor <= MAX_TIMESTAMP, "Loan tenor too large.");
         require(_maxLoanPerColl > 0, "Max loan must not be 0.");
         if (_rs[0] <= _rs[1] || _rs[1] == 0) revert("Invalid rate parameters.");
         if (_liquidityBnds[1] <= _liquidityBnds[0] || _liquidityBnds[0] == 0)
             revert("Invalid liquidity bounds");
         // ensure LP shares can be minted based on 1/1000th of minLp discretization
         require(_minLiquidity >= 1000, "Min liquidity must be at least 1000.");
+        require(_minLoan > 0, "Min loan must not be 0.");
+        require(_minLoan <= type(uint256).max / BASE, "Min loan too large.");
         require(_creatorFee <= MAX_FEE, "Creator fee too high.");
         loanCcyToken = _tokens[0];
         collCcyToken = _tokens[1];
@@ -179,10 +194,13 @@ contract BasePool is IBasePool, Pausable, IPausable {
         uint128 _sendAmount,
         uint256 _deadline,
         uint256 _referralCode
-    ) external override payable {
+    ) external override payable nonReentrant {
+        require(msg.value == 0, "Native value unsupported.");
         // verify LP info and eligibility
         checkTimestamp(_deadline);
         checkSenderApproval(_onBehalfOf, IBasePool.ApprovalTypes.ADD_LIQUIDITY);
+
+        _transferFromExact(loanCcyToken, msg.sender, _sendAmount);
 
         (
             uint256 dust,
@@ -192,8 +210,6 @@ contract BasePool is IBasePool, Pausable, IPausable {
 
 
         _updateRewardAndSend(_onBehalfOf, lastTrackedLiquidity[_onBehalfOf] + _sendAmount);
-
-        loanCcyToken.safeTransferFrom(msg.sender, address(this), _sendAmount);
 
         // transfer dust to creator if any
         if (dust > 0) {
@@ -222,7 +238,7 @@ contract BasePool is IBasePool, Pausable, IPausable {
     function removeLiquidity(
         address _onBehalfOf,
         uint128 numShares
-    ) external override {
+    ) external override nonReentrant {
         // NOTE: no clear of lastAddOfTxOrigin here. The same-block flash-loan guard
         // (set in _addLiquidity, checked in borrow) stores block.timestamp and is
         // compared against the *current* block.timestamp, so it self-expires the
@@ -257,7 +273,7 @@ contract BasePool is IBasePool, Pausable, IPausable {
         _updateRewardAndSend(_onBehalfOf, _satSub(lastTrackedLiquidity[_onBehalfOf], liquidityRemoved));
 
         // transfer liquidity
-        loanCcyToken.safeTransfer(msg.sender, liquidityRemoved);
+        _transferExact(loanCcyToken, msg.sender, liquidityRemoved);
         // spawn event
         emit RemoveLiquidity(
             _onBehalfOf,
@@ -294,7 +310,8 @@ contract BasePool is IBasePool, Pausable, IPausable {
         uint128 _maxRepayLimit,
         uint256 _deadline,
         uint256 _referralCode
-    ) external payable override whenNotPaused {
+    ) external payable override nonReentrant whenNotPaused {
+        require(msg.value == 0, "Native value unsupported.");
         uint256 _timestamp = checkTimestamp(_deadline);
         // check if atomic add and borrow as well as sanity check of onBehalf address
         if (
@@ -338,13 +355,13 @@ contract BasePool is IBasePool, Pausable, IPausable {
         {
             // we first retrieve the tokens because we might not have enough balance
             // to pay the creator fee
-            collCcyToken.safeTransferFrom(msg.sender, address(this), _sendAmount);
+            _transferFromExact(collCcyToken, msg.sender, _sendAmount);
 
             // transfer creator fee to creator in collateral ccy
             _depositRevenue(collCcyToken, _creatorFee);
 
             // transfer loanAmount in loan ccy
-            loanCcyToken.safeTransfer(msg.sender, loanAmount);
+            _transferExact(loanCcyToken, msg.sender, loanAmount);
         }
         // spawn event
         emit Borrow(
@@ -371,7 +388,8 @@ contract BasePool is IBasePool, Pausable, IPausable {
     function repay(
         uint256 _loanIdx,
         address _recipient
-    ) external payable override {
+    ) external payable override nonReentrant {
+        require(msg.value == 0, "Native value unsupported.");
         // verify loan info and eligibility
         if (_loanIdx == 0 || _loanIdx >= loanIdx) revert("Invalid loan index.");
         address _loanOwner = loanIdxToBorrower[_loanIdx];
@@ -389,10 +407,10 @@ contract BasePool is IBasePool, Pausable, IPausable {
         // update loan info
         loanInfo.repaid = true;
 
-        loanCcyToken.safeTransferFrom(msg.sender, address(this), loanInfo.repayment);
+        _transferFromExact(loanCcyToken, msg.sender, loanInfo.repayment);
         // transfer collateral to _recipient (allows for possible
         // transfer directly to someone other than payer/sender)
-        collCcyToken.safeTransfer(_recipient, loanInfo.collateral);
+        _transferExact(collCcyToken, _recipient, loanInfo.collateral);
         // spawn event
         emit Repay(_loanOwner, _loanIdx, loanInfo.repayment);
     }
@@ -411,7 +429,7 @@ contract BasePool is IBasePool, Pausable, IPausable {
         uint256[] calldata _loanIdxs,
         bool _isReinvested,
         uint256 _deadline
-    ) external override {
+    ) external override nonReentrant {
         // check if reinvested is chosen that deadline is valid and sender can add liquidity on behalf of
         if (_isReinvested) {
             claimReinvestmentCheck(_deadline, _onBehalfOf);
@@ -814,12 +832,12 @@ contract BasePool is IBasePool, Pausable, IPausable {
                     loanIdx
                 );
             } else {
-                loanCcyToken.safeTransfer(msg.sender, _repayments);
+                _transferExact(loanCcyToken, msg.sender, _repayments);
             }
         }
         // transfer collateral
         if (_collateral > 0) {
-            collCcyToken.safeTransfer(msg.sender, _collateral);
+            _transferExact(collCcyToken, msg.sender, _collateral);
         }
     }
 
@@ -851,6 +869,7 @@ contract BasePool is IBasePool, Pausable, IPausable {
 
         // calculate new lp shares
         if (totalLpShares == 0) {
+            require(_inAmountAfterFees > minLiquidity, "Initial liquidity must exceed minimum.");
             dust = _totalLiquidity;
             _totalLiquidity = 0;
             newLpShares = (_inAmountAfterFees * 1000) / minLiquidity;
@@ -1031,7 +1050,9 @@ contract BasePool is IBasePool, Pausable, IPausable {
         assert(_inAmountAfterFees != 0); // if 0 must have failed in loanTerms(...)
         if (loanAmount < _minLoanLimit) revert("Loan below limit.");
         if (repaymentAmount > _maxRepayLimit) revert("Repayment above limit.");
-        expiry = uint32(_timestamp + loanTenor);
+        uint256 expiryTimestamp = _timestamp + loanTenor;
+        require(expiryTimestamp <= MAX_TIMESTAMP, "Loan expiry too large.");
+        expiry = uint32(expiryTimestamp);
     }
 
     /**
@@ -1244,15 +1265,50 @@ contract BasePool is IBasePool, Pausable, IPausable {
      *
      * @param _onBehalfOf Account for which the reward is being updated
      */
-    function forceRewardUpdate(address _onBehalfOf) external {
+    function forceRewardUpdate(address _onBehalfOf) external nonReentrant {
         checkSenderApproval(_onBehalfOf, IBasePool.ApprovalTypes.FORCE_REWARD_UPDATE);
         _updateRewardAndSend(_onBehalfOf, lastTrackedLiquidity[_onBehalfOf]);
     }
 
     function _depositRevenue(IERC20 _token, uint256 _amount) internal {
         _token.safeIncreaseAllowance(address(poolController), _amount);
-        try poolController.depositRevenue(_token, _amount) {} catch {
-            // Do nothing
+        try poolController.depositRevenue(_token, _amount) {} catch {}
+        // Revenue is best-effort. Never leave a controller allowance behind
+        // after a failed (or partial) optional deposit.
+        _token.safeApprove(address(poolController), 0);
+    }
+
+    function _transferFromExact(IERC20 _token, address _from, uint256 _amount) internal {
+        uint256 fromBefore = _token.balanceOf(_from);
+        uint256 poolBefore = _token.balanceOf(address(this));
+        _token.safeTransferFrom(_from, address(this), _amount);
+        uint256 fromAfter = _token.balanceOf(_from);
+        uint256 poolAfter = _token.balanceOf(address(this));
+        require(
+            fromBefore >= fromAfter && fromBefore - fromAfter == _amount &&
+                poolAfter >= poolBefore && poolAfter - poolBefore == _amount,
+            "Unsupported token behavior."
+        );
+    }
+
+    function _transferExact(IERC20 _token, address _to, uint256 _amount) internal {
+        uint256 poolBefore = _token.balanceOf(address(this));
+        uint256 recipientBefore = _token.balanceOf(_to);
+        _token.safeTransfer(_to, _amount);
+        uint256 poolAfter = _token.balanceOf(address(this));
+        uint256 recipientAfter = _token.balanceOf(_to);
+        require(
+            poolBefore >= poolAfter && poolBefore - poolAfter == _amount &&
+                recipientAfter >= recipientBefore && recipientAfter - recipientBefore == _amount,
+            "Unsupported token behavior."
+        );
+    }
+
+    function _readTokenDecimals(IERC20 _token) internal view returns (uint256 decimals) {
+        try IERC20Metadata(address(_token)).decimals() returns (uint8 value) {
+            decimals = value;
+        } catch {
+            revert("Token decimals unavailable.");
         }
     }
 
