@@ -7,9 +7,11 @@ src = "contracts"
 test = "test/foundry"
 out = "out"
 libs = ["lib", "node_modules"]
-solc = "0.8.19"
+solc = "0.8.36"
+evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
+optimizer_details = { yul = true }
 # Only compile/test the Foundry harness; ignore the Hardhat TS tests.
 [profile.default.fuzz]
 runs = 256

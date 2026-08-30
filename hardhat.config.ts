@@ -6,18 +6,21 @@ import "@nomiclabs/hardhat-ethers"
 import "@nomicfoundation/hardhat-toolbox";
 import "hardhat-contract-sizer"
 
-export default{
-    defaultNetwork: "hardhat",
-    solidity: {
-        version: "0.8.19",
-        settings: {
-            optimizer: {
+const solidityConfig = {
+    version: "0.8.36",
+    settings: {
+        evmVersion: "cancun",
+        optimizer: {
             enabled: true,
             runs: 200,
-            details: { yul: false },
-            },
+            details: { yul: true },
         },
     },
+}
+
+export default{
+    defaultNetwork: "hardhat",
+    solidity: solidityConfig,
     contractSizer: {
         runOnCompile: true
     },
