@@ -19,6 +19,21 @@ This guide covers VinuFinance deployment specifics for VinuChain.
 | Block Time | ~3 seconds |
 | Consensus | Proof of Stake (PoS) |
 
+### VinuChain Testnet
+
+| Property | Value |
+|----------|-------|
+| Chain ID | 206 |
+| RPC URL | https://vinufoundation-rpc.com |
+| Explorer | https://testnet.vinuexplorer.org |
+
+Hardhat registers this network as `vinuchainTestnet` and reads an optional
+`VINUCHAIN_TESTNET_RPC_URL` override. The production script below is guarded to
+chain ID `207` and must never be used to deploy this mainnet configuration to
+testnet. Run `yarn test:deployment` for the production-equivalent local
+rehearsal; it deploys only mock tokens and real protocol contracts to the
+ephemeral Hardhat chain and submits no testnet or mainnet transactions.
+
 ## Network Configuration
 
 ### Hardhat Config
@@ -30,8 +45,13 @@ module.exports = {
         vinuchain: {
             url: process.env.VINUCHAIN_RPC_URL || "https://rpc.vinuchain.org",
             chainId: 207,
-            accounts: [process.env.PRIVATE_KEY],
+            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
             gasPrice: "auto"
+        },
+        vinuchainTestnet: {
+            url: process.env.VINUCHAIN_TESTNET_RPC_URL || "https://vinufoundation-rpc.com",
+            chainId: 206,
+            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
         }
     }
 };
@@ -66,10 +86,10 @@ Add VinuChain to MetaMask:
 
 ## Deployment Script
 
-### Complete Deployment
+### Complete Deployment (historical illustrative example)
 
 ```javascript
-// scripts/deploy-vinuchain.js
+// illustrative constructor sequence; the executable script is scripts/deploy.prod.ts
 const { ethers } = require("hardhat");
 
 async function main() {
@@ -171,7 +191,7 @@ main()
 ### Run Deployment
 
 ```bash
-npx hardhat run scripts/deploy-vinuchain.js --network vinuchain
+npx hardhat run scripts/deploy.prod.ts --network vinuchain
 ```
 
 ## Contract Verification

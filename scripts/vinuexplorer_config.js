@@ -11,4 +11,14 @@ const vinuExplorerChain = {
   },
 };
 
-module.exports = { vinuExplorerChain };
+const vinuTestnetExplorerChain = {
+  network: "vinuchainTestnet",
+  chainId: 206,
+  urls: {
+    // The testnet explorer exposes the same Blockscout-compatible API shape.
+    apiURL: "https://testnet.vinuexplorer.org/api",
+    browserURL: "https://testnet.vinuexplorer.org",
+  },
+};
+
+module.exports = { vinuExplorerChain, vinuTestnetExplorerChain };

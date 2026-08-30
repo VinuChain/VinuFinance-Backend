@@ -53,12 +53,24 @@ Create a `.env` file in the project root:
 ```bash
 # Network RPC URLs
 VINUCHAIN_RPC_URL=https://rpc.vinuchain.org
-TESTNET_RPC_URL=https://vinufoundation-rpc.com
+VINUCHAIN_TESTNET_RPC_URL=https://vinufoundation-rpc.com
 
 # Private key for deployment (without 0x prefix)
 PRIVATE_KEY=your_private_key_here
 
 # VinuExplorer uses its public Blockscout-compatible API; no API key is needed.
+```
+
+The `vinuchain` Hardhat network is VinuChain mainnet (chain ID `207`). The
+`vinuchainTestnet` network is the VinuChain testnet (chain ID `206`) and uses
+`https://vinufoundation-rpc.com` by default. Its explorer is
+`https://testnet.vinuexplorer.org`. Both networks omit deploy accounts unless
+`PRIVATE_KEY` is set. `scripts/deploy.prod.ts` is deliberately mainnet-only;
+use the local deployment rehearsal for a no-chain-mutation release check:
+
+```bash
+yarn test:deployment
+yarn verify:network
 ```
 
 ## Project Structure
@@ -128,12 +140,13 @@ npx hardhat node
 
 This starts a local Ethereum node at `http://127.0.0.1:8545`.
 
-### Deploy to Local Node
+### Run Local Deployment Rehearsal
 
-In a new terminal:
+The release rehearsal uses an ephemeral Hardhat chain and never sends a
+transaction to VinuChain:
 
 ```bash
-npx hardhat run scripts/deploy.js --network localhost
+yarn test:deployment
 ```
 
 ## Hardhat Console
@@ -241,7 +254,7 @@ it("should emit AddLiquidity event", async function () {
 ### Basic Deployment
 
 ```javascript
-// scripts/deploy.js
+// illustrative deployment sequence; use scripts/deploy.prod.ts for production
 const { ethers } = require("hardhat");
 
 async function main() {
@@ -288,20 +301,21 @@ main().catch(console.error);
 ### Running Deployment
 
 ```bash
-# Local
-npx hardhat run scripts/deploy.js --network localhost
+# Ephemeral local production-equivalent rehearsal (mock tokens only)
+yarn test:deployment
 
-# Testnet
-npx hardhat run scripts/deploy.js --network testnet
+# Testnet network registration/read-only gate (does not deploy)
+yarn verify:network
 
-# Mainnet
-npx hardhat run scripts/deploy.js --network vinuchain
+# Mainnet production deployment (requires the deploy.prod.ts env contract)
+npx hardhat run scripts/deploy.prod.ts --network vinuchain
 ```
 
 ## Contract Verification
 
-After deployment, verify on VinuExplorer's Blockscout-compatible API. The
-Hardhat config registers chain 207 with the documented API and browser URLs;
+After a separately authorized deployment, verify on VinuExplorer's
+Blockscout-compatible API. The Hardhat config registers both chain 207 and
+testnet chain 206 with their documented API and browser URLs;
 the command below submits a verification request, so run it only after
 checking the deployment address and constructor arguments. First validate the
 registration without making a submission:

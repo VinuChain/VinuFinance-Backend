@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const assert = require("assert");
-const { vinuExplorerChain } = require("./vinuexplorer_config");
+const { vinuExplorerChain, vinuTestnetExplorerChain } = require("./vinuexplorer_config");
 
 assert.deepStrictEqual(vinuExplorerChain, {
   network: "vinuchain",
@@ -12,11 +12,22 @@ assert.deepStrictEqual(vinuExplorerChain, {
   },
 });
 
+assert.deepStrictEqual(vinuTestnetExplorerChain, {
+  network: "vinuchainTestnet",
+  chainId: 206,
+  urls: {
+    apiURL: "https://testnet.vinuexplorer.org/api",
+    browserURL: "https://testnet.vinuexplorer.org",
+  },
+});
+
 console.log(JSON.stringify({
   pass: true,
-  network: vinuExplorerChain.network,
-  chainId: vinuExplorerChain.chainId,
-  apiURL: vinuExplorerChain.urls.apiURL,
-  browserURL: vinuExplorerChain.urls.browserURL,
+  networks: [vinuExplorerChain, vinuTestnetExplorerChain].map((chain) => ({
+    network: chain.network,
+    chainId: chain.chainId,
+    apiURL: chain.urls.apiURL,
+    browserURL: chain.urls.browserURL,
+  })),
   submission: "not attempted",
 }, null, 2));

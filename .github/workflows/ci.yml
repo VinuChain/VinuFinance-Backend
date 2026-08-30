@@ -49,6 +49,10 @@ jobs:
           REWARD_COEFFICIENT: ${{ matrix.reward_coefficient }}
         run: npm test
 
+      - name: Production-equivalent deployment rehearsal
+        if: matrix.reward_coefficient == '1000000000000000'
+        run: yarn test:deployment
+
   # Dependency audit gate. Runtime dependencies are audited separately from
   # the complete toolchain graph; the latter has a small, exact allowlist in
   # scripts/audit_gate.js for upstream Hardhat 2 / Ethers 5 constraints.

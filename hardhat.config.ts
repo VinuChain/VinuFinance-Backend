@@ -11,7 +11,7 @@ import "hardhat-gas-reporter";
 import "solidity-coverage";
 import "hardhat-contract-sizer"
 
-const { vinuExplorerChain } = require("./scripts/vinuexplorer_config")
+const { vinuExplorerChain, vinuTestnetExplorerChain } = require("./scripts/vinuexplorer_config")
 
 const solidityConfig = {
     version: "0.8.36",
@@ -43,6 +43,11 @@ export default{
             url: process.env.VINUCHAIN_RPC_URL || 'https://rpc.vinuchain.org',
             chainId: 207,
             accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
+        },
+        vinuchainTestnet: {
+            url: process.env.VINUCHAIN_TESTNET_RPC_URL || 'https://vinufoundation-rpc.com',
+            chainId: 206,
+            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
         }
     },
     // VinuExplorer supports Blockscout's Etherscan-compatible API. Keep the
@@ -50,11 +55,11 @@ export default{
     // Blockscout provider uses the documented endpoint directly.
     etherscan: {
         enabled: false,
-        customChains: [vinuExplorerChain],
+        customChains: [vinuExplorerChain, vinuTestnetExplorerChain],
     },
     blockscout: {
         enabled: true,
-        customChains: [vinuExplorerChain],
+        customChains: [vinuExplorerChain, vinuTestnetExplorerChain],
     },
     sourcify: {
         enabled: false,

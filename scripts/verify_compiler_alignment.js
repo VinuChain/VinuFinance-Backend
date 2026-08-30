@@ -6,8 +6,8 @@
  * Hardhat build-info is the authoritative record of the Solidity compiler
  * input. Foundry's declarative settings are checked against its resolved
  * `forge config --json` output, then the generated artifacts are compared.
- * Artifacts must match byte-for-byte. Metadata-stripped hashes are also
- * reported for concise executable-code evidence.
+ * Artifacts and canonical ABIs must match across both pipelines. Metadata-
+ * stripped hashes are also reported for concise executable-code evidence.
  */
 
 const fs = require("fs");
@@ -23,6 +23,10 @@ const expected = {
   optimizerRuns: 200,
   yul: true,
   bytecodeHash: "none",
+};
+const sizeLimits = {
+  runtimeBytes: 24576,
+  initBytes: 49152,
 };
 
 function fail(message) {
@@ -74,6 +78,12 @@ function normalizeBytecode(bytecode) {
   return bytecode.replace(/^0x/, "").toLowerCase();
 }
 
+function bytecodeBytes(bytecode, label) {
+  const normalized = normalizeBytecode(bytecode);
+  assert(/^[0-9a-f]*$/.test(normalized) && normalized.length % 2 === 0, `${label}: invalid bytecode hex`);
+  return Buffer.from(normalized, "hex");
+}
+
 function stripMetadata(bytecode) {
   const bytes = Buffer.from(normalizeBytecode(bytecode), "hex");
   assert(bytes.length >= 2, "bytecode is too short to contain metadata length");
@@ -85,6 +95,59 @@ function stripMetadata(bytecode) {
 function shortHash(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 16);
 }
+
+// Solidity ABI JSON contains source-level names and internalType annotations
+// that are not part of the canonical ABI. Normalize only the selector/event
+// shape so Hardhat and Foundry can be compared without tool-specific noise.
+function canonicalType(parameter) {
+  const type = parameter.type || "";
+  if (!type.startsWith("tuple")) return type;
+  return `(${(parameter.components || []).map(canonicalType).join(",")})${type.slice("tuple".length)}`;
+}
+
+function canonicalParameter(parameter, includeIndexed) {
+  const result = { type: canonicalType(parameter) };
+  if (includeIndexed && parameter.indexed !== undefined) result.indexed = Boolean(parameter.indexed);
+  return result;
+}
+
+function canonicalAbi(abi) {
+  return abi
+    .map((item) => {
+      const result = { type: item.type };
+      if (item.name !== undefined) result.name = item.name;
+      if (item.stateMutability !== undefined) result.stateMutability = item.stateMutability;
+      if (item.anonymous !== undefined) result.anonymous = Boolean(item.anonymous);
+      if (item.inputs) result.inputs = item.inputs.map((parameter) => canonicalParameter(parameter, item.type === "event"));
+      if (item.outputs) result.outputs = item.outputs.map((parameter) => canonicalParameter(parameter, false));
+      return result;
+    })
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function canonicalFunctionSignatures(abi) {
+  return new Set(
+    abi
+      .filter((item) => item.type === "function")
+      .map((item) => `${item.name}(${(item.inputs || []).map(canonicalType).join(",")})`),
+  );
+}
+
+// These methods are security/accounting surface, so checking ABI equality is
+// not enough: both build paths must expose them explicitly.
+const requiredFunctions = {
+  BasePool: [
+    "getCurrentLpShares(address)",
+    "pendingRevenue(address)",
+    "pendingRewardDebt(address)",
+    "flushPendingRevenue(address,uint256)",
+    "retryPendingReward(address,uint256)",
+  ],
+  Controller: [
+    "requestTokenDistribution(address,uint128,uint32,uint96)",
+    "requestTokenDistributionExact(address,uint256)",
+  ],
+};
 
 const buildInfoDir = path.join(root, "artifacts", "build-info");
 const buildInfoFiles = fs.existsSync(buildInfoDir)
@@ -135,6 +198,14 @@ const comparisons = [];
 for (const name of contracts) {
   const hardhat = readJson(path.join("artifacts", "contracts", `${name}.sol`, `${name}.json`));
   const foundry = readJson(path.join("out", `${name}.sol`, `${name}.json`));
+  const hardhatInitCode = bytecodeBytes(hardhat.bytecode, `${name} Hardhat init`);
+  const foundryInitCode = bytecodeBytes(foundry.bytecode.object, `${name} Foundry init`);
+  const hardhatRuntimeCode = bytecodeBytes(hardhat.deployedBytecode, `${name} Hardhat runtime`);
+  const foundryRuntimeCode = bytecodeBytes(foundry.deployedBytecode.object, `${name} Foundry runtime`);
+  assert(hardhatRuntimeCode.length <= sizeLimits.runtimeBytes, `${name}: runtime bytecode exceeds ${sizeLimits.runtimeBytes} bytes`);
+  assert(hardhatInitCode.length <= sizeLimits.initBytes, `${name}: init bytecode exceeds ${sizeLimits.initBytes} bytes`);
+  assert(foundryRuntimeCode.length <= sizeLimits.runtimeBytes, `${name}: Foundry runtime bytecode exceeds ${sizeLimits.runtimeBytes} bytes`);
+  assert(foundryInitCode.length <= sizeLimits.initBytes, `${name}: Foundry init bytecode exceeds ${sizeLimits.initBytes} bytes`);
   assert(
     normalizeBytecode(hardhat.bytecode) === normalizeBytecode(foundry.bytecode.object),
     `${name}: exact init bytecode differs`,
@@ -149,14 +220,26 @@ for (const name of contracts) {
   const foundryRuntime = stripMetadata(foundry.deployedBytecode.object);
   assert(hardhatInit.equals(foundryInit), `${name}: metadata-stripped init bytecode differs`);
   assert(hardhatRuntime.equals(foundryRuntime), `${name}: metadata-stripped deployed runtime bytecode differs`);
+  const hardhatAbi = canonicalAbi(hardhat.abi || []);
+  const foundryAbi = canonicalAbi(foundry.abi || []);
+  assert(JSON.stringify(hardhatAbi) === JSON.stringify(foundryAbi), `${name}: canonical ABI differs`);
+  const hardhatFunctions = canonicalFunctionSignatures(hardhat.abi || []);
+  const foundryFunctions = canonicalFunctionSignatures(foundry.abi || []);
+  for (const signature of requiredFunctions[name] || []) {
+    assert(hardhatFunctions.has(signature), `${name}: Hardhat ABI is missing ${signature}`);
+    assert(foundryFunctions.has(signature), `${name}: Foundry ABI is missing ${signature}`);
+  }
   comparisons.push({
     contract: name,
+    initCodeBytes: hardhatInitCode.length,
     initBytes: hardhatInit.length,
     hardhatInitSha256: shortHash(hardhatInit),
     foundryInitSha256: shortHash(foundryInit),
+    runtimeCodeBytes: hardhatRuntimeCode.length,
     runtimeBytes: hardhatRuntime.length,
     hardhatSha256: shortHash(hardhatRuntime),
     foundrySha256: shortHash(foundryRuntime),
+    abiEntries: hardhatAbi.length,
   });
 }
 
@@ -174,4 +257,5 @@ console.log(JSON.stringify({
     },
   },
   deployedRuntime: comparisons,
+  sizeLimits,
 }, null, 2));
