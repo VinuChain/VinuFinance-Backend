@@ -4,6 +4,7 @@ import { BigNumber } from "@ethersproject/bignumber";
 import chai from "chai";
 import chaiAsPromised from "chai-as-promised";
 import { isNumberObject } from "util/types"
+import type { Contract, ContractFactory } from "ethers";
 
 
 import hre from 'hardhat'
@@ -14,14 +15,14 @@ const expect = chai.expect
 
 let deployer: any;
 
-let controllerContractBlueprint : hre.ethers.ContractFactory
-let contractBlueprint: ethers.ContractFactory
-let multiclaimContractBlueprint: ethers.ContractFactory
-let emergencyWithdrawalContractBlueprint: ethers.ContractFactory
-let feeOnTransferTokenBlueprint: ethers.ContractFactory
-let reentrantRevenueTokenBlueprint: ethers.ContractFactory
-let zeroDecimalTokenBlueprint: ethers.ContractFactory
-let metadataTokenBlueprint: ethers.ContractFactory
+let controllerContractBlueprint : ContractFactory
+let contractBlueprint: ContractFactory
+let multiclaimContractBlueprint: ContractFactory
+let emergencyWithdrawalContractBlueprint: ContractFactory
+let feeOnTransferTokenBlueprint: ContractFactory
+let reentrantRevenueTokenBlueprint: ContractFactory
+let zeroDecimalTokenBlueprint: ContractFactory
+let metadataTokenBlueprint: ContractFactory
 
 let controllerContract : any;
 let contract: any;
@@ -123,7 +124,7 @@ const checkEvents = async (tx, correct : Array<Object>, referenceContract : any 
     }
 }
 
-const checkQuery = async (methodName : string, params : Array<any>, expected : Array<any>, referenceContract : ethers.Contract | undefined = undefined) => {
+const checkQuery = async (methodName : string, params : Array<any>, expected : Array<any>, referenceContract : Contract | undefined = undefined) => {
     if (!referenceContract) {
         referenceContract = contract
     }
@@ -182,7 +183,7 @@ const newUsers = async (...tokenInfos : Array<Array<Array<String | Number>>>) =>
     return users
 }
 
-const setTime = async (newTime : Number, referenceContract : ethers.Contract | undefined = undefined) => {
+const setTime = async (newTime : Number, referenceContract : Contract | undefined = undefined) => {
     if (!referenceContract) {
         referenceContract = contract
     }
@@ -190,7 +191,8 @@ const setTime = async (newTime : Number, referenceContract : ethers.Contract | u
 }
 
 
-const whitelistContract = async () => {
+const whitelistContract = async (withdrawVoteToken = false) => {
+    if (await controllerContract.poolWhitelisted(contract.address)) return
     const [manager] = await newUsers([ [VOTE_TOKEN, 10000100] ])
     await controllerContract.connect(manager).depositRewardSupply('10000000')
 
@@ -201,6 +203,11 @@ const whitelistContract = async () => {
     await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
 
     await checkQuery('poolWhitelisted', [contract.address], [true], controllerContract)
+
+    if (withdrawVoteToken) {
+        await controllerContract.connect(manager).removeVote(0)
+        await controllerContract.connect(manager).withdrawVoteToken('100')
+    }
 }
 
 
@@ -348,8 +355,13 @@ describe('test BasePool', function () {
                     0, 0, REWARD_COEFFICIENT, 1
                 ]
             )
+
         })
         describe('addLiquidity', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('adds liquidity', async function () {
                 const [alice] = await newUsers([ [LOAN_CCY_TOKEN, 10000] ])
 
@@ -557,6 +569,10 @@ describe('test BasePool', function () {
         })
 
         describe('removeLiquidity', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('removes liquidity', async function () {
                 const [alice] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ])
 
@@ -811,6 +827,10 @@ describe('test BasePool', function () {
         })
 
         describe('borrow', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('borrows', async function () {
                 const [alice, bob] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ], [[COLL_CCY_TOKEN, 8000]])
 
@@ -1016,6 +1036,10 @@ describe('test BasePool', function () {
         })
 
         describe('repay', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('repays a loan', async function () {
                 const [alice, bob] = await newUsers(
                     [ [LOAN_CCY_TOKEN, 8000] ],
@@ -1351,6 +1375,10 @@ describe('test BasePool', function () {
         })
 
         describe('claim', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('claims the repayment for a successful loan', async function () {
                 const [alice, bob] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ], [[LOAN_CCY_TOKEN, 8000], [COLL_CCY_TOKEN, 8000]])
 
@@ -5143,6 +5171,10 @@ describe('test BasePool', function () {
         })
 
         describe('MultiClaim', function () {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('checks that MultiClaim is equivalent to multiple claims', async function () {
                 await setTime(0, contract)
                 const multiclaimContract = await multiclaimContractBlueprint.deploy()
@@ -5811,6 +5843,7 @@ describe('test BasePool', function () {
         describe('emergency withdrawal', function() {
             beforeEach(async function () {
                 emergencyWithdrawalContract = await emergencyWithdrawalContractBlueprint.deploy()
+                await whitelistContract()
             })
 
             it('correctly approves and unapproves', async function () {
@@ -6116,6 +6149,8 @@ describe('test BasePool', function () {
                     REWARD_COEFFICIENT
                 )
 
+                await whitelistContract()
+
                 const [alice] = await newUsers([[LOAN_CCY_TOKEN, setup.tests[setup.tests.length - 1].liquidity]])
 
                 let currentLiquidity = BigNumber.from(0)
@@ -6171,6 +6206,8 @@ describe('test BasePool', function () {
                 controllerContract.address,
                 REWARD_COEFFICIENT
             )
+
+            await whitelistContract(true)
 
             await setTime(0)
             await setTime(0, controllerContract)

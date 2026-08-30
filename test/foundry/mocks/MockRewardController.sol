@@ -14,8 +14,9 @@ import {IController} from "../../../contracts/interfaces/IController.sol";
  * `rewardSupply` into per-account `rewardBalance`, using
  * `amount = liquidity * duration * coefficient / REWARD_BASE`.
  *
- * It deliberately does NOT model governance/whitelisting so the harness can
- * exercise the BasePool reward bookkeeping in isolation. `requestTokenDistribution`
+ * It deliberately reports every pool as whitelisted rather than modelling
+ * governance, so the harness can exercise the BasePool reward bookkeeping in
+ * isolation. `requestTokenDistribution`
  * succeeds (does not revert) so the pool's try/catch swallow path is NOT what
  * keeps the test green — any reward-arithmetic underflow surfaces in BasePool itself.
  */
@@ -40,6 +41,10 @@ contract MockRewardController is IController {
 
     function supportsInterface(bytes4 interfaceId) external pure override returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IController).interfaceId;
+    }
+
+    function poolWhitelisted(address) external pure returns (bool) {
+        return true;
     }
 
     function depositRevenue(IERC20, uint256) external payable override {

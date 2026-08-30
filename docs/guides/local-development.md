@@ -33,6 +33,12 @@ enabled**. Run `yarn verify:compiler` to rebuild both artifacts and compare
 resolved settings plus metadata-stripped init/runtime bytecode for all four
 deployed contracts.
 
+Run the backend typecheck before tests:
+
+```bash
+yarn typecheck
+```
+
 The Foundry harness uses a pinned forge-std revision:
 
 ```bash

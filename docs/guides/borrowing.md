@@ -277,6 +277,12 @@ If a pool is paused by governance:
 
 Check pool status before attempting to borrow.
 
+## Dewhitelisted Pools
+
+Controller dewhitelisting also blocks new deposits, borrowing, and claim
+reinvestment at the pool contract. Existing loans can still be repaid, and LPs
+can still remove liquidity or claim settled loans without reinvesting.
+
 ## Best Practices
 
 1. **Check Terms First** - Always call `loanTerms()` before borrowing

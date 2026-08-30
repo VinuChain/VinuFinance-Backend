@@ -12,6 +12,10 @@ import "./interfaces/IController.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
+interface IControllerWhitelist {
+    function poolWhitelisted(address _pool) external view returns (bool);
+}
+
 contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     using SafeERC20 for IERC20;
 
@@ -220,6 +224,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         uint256 _referralCode
     ) external override payable nonReentrant whenNotPaused {
         require(msg.value == 0, "Native value unsupported.");
+        _requirePoolWhitelisted();
         // verify LP info and eligibility
         checkTimestamp(_deadline);
         checkSenderApproval(_onBehalfOf, IBasePool.ApprovalTypes.ADD_LIQUIDITY);
@@ -350,6 +355,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         uint256 _referralCode
     ) external payable override nonReentrant whenNotPaused {
         require(msg.value == 0, "Native value unsupported.");
+        _requirePoolWhitelisted();
         uint256 _timestamp = checkTimestamp(_deadline);
         // LoanInfo expiry and LP cursors are uint32-backed. Do not record a
         // loan whose index would make the next cursor unrepresentable.
@@ -1245,8 +1251,16 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         address _onBehalfOf
     ) internal view {
         require(!paused(), "Pausable: paused");
+        _requirePoolWhitelisted();
         checkTimestamp(_deadline);
         checkSenderApproval(_onBehalfOf, IBasePool.ApprovalTypes.ADD_LIQUIDITY);
+    }
+
+    function _requirePoolWhitelisted() internal view {
+        require(
+            IControllerWhitelist(address(poolController)).poolWhitelisted(address(this)),
+            "Pool is not whitelisted."
+        );
     }
 
     /**

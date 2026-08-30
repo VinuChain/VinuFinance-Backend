@@ -4,14 +4,17 @@ CI runs Yarn's audit twice: once for the runtime graph (`--groups
 dependencies`) and once for the complete Hardhat/Foundry toolchain. The gate in
 `scripts/audit_gate.js` always rejects critical advisories and rejects every
 high advisory except the exact upstream paths listed below. Low and moderate
-findings are printed in the report; they are not hidden or converted into a
-false clean result.
+counts are printed in the gate result; raw audit JSONL is supplied to the gate
+during CI for path-level review. They are not hidden or converted into a false
+clean result.
 
-The current live audit has no critical findings. Runtime `ethers` is promoted
-to `dependencies` because the reconciler needs its signer/provider APIs, so the
-runtime graph includes the Ethers 5 WebSocket dependency. The current counts
-must be read from the CI report rather than assumed: lower-severity findings
-can change as the registry advisory database changes.
+The validation run for this integration reported no critical findings. Its
+point-in-time registry counts were 45 production dependencies (9 low, 1
+moderate, 1 high) and 607 full-graph dependencies (15 low, 16 moderate, 9
+high). Runtime `ethers` is promoted to `dependencies` because the reconciler
+needs its signer/provider APIs, so the runtime graph includes the Ethers 5
+WebSocket dependency. These counts must be refreshed from the CI report rather
+than assumed; registry advisories can change independently of this repository.
 
 ## Explicit high-severity exceptions
 

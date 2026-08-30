@@ -78,6 +78,7 @@
   "scripts": {
     "test_legacy": "./node_modules/.bin/mocha --full-trace --config ./test/mocharc.nightly.json",
     "preprocess": "npx ts-node scripts/preprocess_for_tests.ts",
+    "typecheck": "tsc --noEmit",
     "test": "TS_NODE_FILES=true && npm run preprocess && npx hardhat test",
     "coverage": "TS_NODE_FILES=true && npm run preprocess && npx hardhat coverage",
     "test:foundry": "forge test --match-path \"test/foundry/*.t.sol\" -vv",

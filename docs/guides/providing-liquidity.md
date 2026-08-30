@@ -50,6 +50,10 @@ loanToken.approve(poolAddress, depositAmount);
 
 ### 3. Add Liquidity
 
+The pool must be currently whitelisted by the Controller before a new deposit
+can be accepted. A dewhitelist stops new deposits atomically; it does not lock
+existing LP exits or settled claim-only withdrawals.
+
 Call the `addLiquidity` function:
 
 ```solidity

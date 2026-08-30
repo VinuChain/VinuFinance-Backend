@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
+      - name: Typecheck backend
+        run: yarn typecheck
+
       - name: Compile + run test suite
         env:
           REWARD_COEFFICIENT: ${{ matrix.reward_coefficient }}

@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 import "forge-std/Test.sol";
 import {BasePool} from "../../contracts/BasePool.sol";
+import {EmergencyWithdrawal} from "../../contracts/EmergencyWithdrawal.sol";
 import {IBasePool} from "../../contracts/interfaces/IBasePool.sol";
 import {IController} from "../../contracts/interfaces/IController.sol";
 import {IPausable} from "../../contracts/interfaces/IPausable.sol";
@@ -42,6 +43,7 @@ contract P1CollateralToken is P1Token {
 }
 
 contract P1Controller is IController {
+    bool public poolsWhitelisted = true;
     bool public failRevenue;
     bool public noOpRevenue;
     bool public partialRevenue;
@@ -55,8 +57,16 @@ contract P1Controller is IController {
         partialRevenue = enabled;
     }
 
+    function setPoolWhitelisted(bool enabled) external {
+        poolsWhitelisted = enabled;
+    }
+
     function supportsInterface(bytes4 interfaceId) external pure override returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IController).interfaceId;
+    }
+
+    function poolWhitelisted(address) external view returns (bool) {
+        return poolsWhitelisted;
     }
 
     function depositRevenue(IERC20 token, uint256 amount) external payable override {
@@ -573,6 +583,57 @@ contract P1AccountingTest is Test {
         (, , , uint256[] memory shares, ) = pool.getLpInfo(LP1);
         vm.prank(LP1);
         pool.removeLiquidity(LP1, uint128(shares[shares.length - 1]));
+    }
+
+    function test_dewhitelistedPoolBlocksNewExposureButSettlementsAndExitsRemainLive() public {
+        vm.warp(1_000_000);
+        P1Token loan = new P1Token("P1 loan", "P1L");
+        P1CollateralToken collateral = new P1CollateralToken();
+        P1Controller controller = new P1Controller();
+        BasePool pool = _poolWithController(loan, collateral, IController(address(controller)));
+        EmergencyWithdrawal emergency = new EmergencyWithdrawal();
+        _seedTwoLps(pool, loan);
+        _fundAndApprove(collateral, BORROWER, 20_000, address(pool));
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(BORROWER);
+        pool.borrow(BORROWER, 10_000, 0, type(uint128).max, block.timestamp, 0);
+        (uint128 repayment, , , , , ) = pool.loanIdxToLoanInfo(1);
+        _fundAndApprove(loan, BORROWER, repayment, address(pool));
+
+        controller.setPoolWhitelisted(false);
+
+        _fundAndApprove(loan, LP3, MIN_LIQUIDITY + 1, address(pool));
+        vm.expectRevert(bytes("Pool is not whitelisted."));
+        vm.prank(LP3);
+        pool.addLiquidity(LP3, MIN_LIQUIDITY + 1, block.timestamp, 0);
+
+        _fundAndApprove(collateral, BORROWER, 10_000, address(pool));
+        vm.expectRevert(bytes("Pool is not whitelisted."));
+        vm.prank(BORROWER);
+        pool.borrow(BORROWER, 10_000, 0, type(uint128).max, block.timestamp, 0);
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(BORROWER);
+        pool.repay(1, BORROWER);
+
+        vm.expectRevert(bytes("Pool is not whitelisted."));
+        vm.prank(LP1);
+        pool.claim(LP1, _one(1), true, block.timestamp);
+
+        vm.prank(LP1);
+        pool.claim(LP1, _one(1), false, block.timestamp);
+
+        vm.warp(1_000_000 + 121);
+        (, , , uint256[] memory lp1Shares, ) = pool.getLpInfo(LP1);
+        vm.prank(LP1);
+        pool.removeLiquidity(LP1, uint128(lp1Shares[lp1Shares.length - 1]));
+
+        vm.prank(LP2);
+        pool.setApprovals(address(emergency), 4);
+        vm.prank(LP2);
+        emergency.approve(address(pool), address(this));
+        emergency.collectEmergency(pool, LP2);
     }
 
     function test_pendingRevenueRetriesWithoutInvisiblePoolAssets() public {
