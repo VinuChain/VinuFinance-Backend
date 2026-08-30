@@ -2239,7 +2239,9 @@ describe('test BasePool', function () {
                 const loanAmount = 428
                 const repaymentAmount = 582
                 const repaymentAlice = Math.floor(repaymentAmount * liquidityBeforeLoanAlice / liquidityBeforeLoan)
-                const repaymentBob = Math.floor(repaymentAmount * liquidityBeforeLoanBob / liquidityBeforeLoan)
+                // The final claimant receives the cumulative-floor residual so
+                // every repayment unit is conserved.
+                const repaymentBob = repaymentAmount - repaymentAlice
 
                 // Add the first batch of liquidity
 
@@ -2430,7 +2432,7 @@ describe('test BasePool', function () {
                         150
                     )
 
-                addLiquidity(Math.floor(repaymentAmount * sharesBeforeLoanAlice / sharesBeforeLoan), 'alice')
+                addLiquidity(repaymentAlice, 'alice')
 
                 await checkQuery('getPoolInfo', [],
                     [
@@ -2517,7 +2519,7 @@ describe('test BasePool', function () {
                         150
                     )
 
-                addLiquidity(Math.floor(repaymentAmount * sharesBeforeLoanBob / sharesBeforeLoan), 'bob')
+                addLiquidity(repaymentBob, 'bob')
 
                 await checkQuery('getPoolInfo', [],
                     [
