@@ -9,6 +9,7 @@ import {
   LP_INTERFACE,
   NEW_SUB_POOL_INTERFACE,
   NEW_SUB_POOL_TOPIC,
+  buildLiquidityAnalytics,
   decodeLpOwners,
   decodeTraceTransfers,
   keccak256,
@@ -70,6 +71,19 @@ assert.equal(lpEntitlement(10_000n, 1_000n, 10n, 3n), 2_700n);
 assert.equal(lpEntitlement(1_000n, 1_000n, 0n, 0n), 0n);
 assert.equal(lpEntitlement(999n, 1_000n, 0n, 0n), 0n);
 assert.throws(() => lpEntitlement(999n, 1_000n, 1n, 1n), /reserved minimum/);
+
+const liquidityAnalytics = buildLiquidityAnalytics(
+  { tokens: { loan: { address: manifest.tokens.wvc.address, symbol: "WVC", decimals: 18 } } },
+  [{
+    id: "pool",
+    config: { loanToken: manifest.tokens.wvc.address, totalLiquidity: "500", minLiquidity: "100" },
+    loans: { committedLoanAmount: "300" },
+    settlement: { scanComplete: true },
+  }],
+);
+assert.equal(liquidityAnalytics[0].availableLiquidity, "400");
+assert.equal(liquidityAnalytics[0].committedLiquidity, "300");
+assert.equal(liquidityAnalytics[0].utilizationBps, "4285");
 
 const eventLogs = manifest.pools.map((pool) => {
   const encoded = NEW_SUB_POOL_INTERFACE.encodeEventLog(NEW_SUB_POOL_INTERFACE.getEvent("NewSubPool"), [

@@ -1161,7 +1161,9 @@ function buildLiquidityAnalytics(manifest, poolReports) {
     totalLiquidity: group.totalLiquidity.toString(),
     availableLiquidity: group.availableLiquidity.toString(),
     committedLiquidity: group.committedLiquidity.toString(),
-    utilizationBps: group.totalLiquidity === 0n ? null : ((group.committedLiquidity * 10_000n) / group.totalLiquidity).toString(),
+    utilizationBps: group.availableLiquidity + group.committedLiquidity === 0n
+      ? null
+      : ((group.committedLiquidity * 10_000n) / (group.availableLiquidity + group.committedLiquidity)).toString(),
   }));
 }
 
@@ -1446,6 +1448,7 @@ export {
   LP_INTERFACE,
   NEW_SUB_POOL_INTERFACE,
   NEW_SUB_POOL_TOPIC,
+  buildLiquidityAnalytics,
   decodeLpOwners,
   decodeTraceTransfers,
   keccak256,
