@@ -59,7 +59,7 @@ Before borrowing, query the terms you'll receive:
     uint128 loanAmount,       // What you'll receive
     uint128 repaymentAmount,  // What you'll owe
     uint128 pledgeAmount,     // Collateral needed
-    uint256 creatorFee,       // Pool creation fee
+    uint256 creatorFee,       // Protocol fee (legacy ABI name)
     uint256 totalLiquidity    // Available liquidity
 ) = pool.loanTerms(collateralAmount);
 ```
@@ -260,8 +260,7 @@ Zero liquidation loans function like **put options** on your collateral:
 | Fee Type | Description |
 |----------|-------------|
 | Interest | Included in repayment amount |
-| Creator Fee | Small fee to pool creator |
-| Protocol Fee | Portion goes to governance stakers |
+| Protocol Fee (`creatorFee` in the legacy ABI) | Deducted from collateral and deposited in the Controller for vote-token snapshot distribution |
 
 All fees are known upfront before you borrow.
 
