@@ -89,12 +89,20 @@ contract Controller is IController, ReentrancyGuard {
     // Whether a pool is whitelisted
     mapping(address => bool) public poolWhitelisted;
 
+    // Future-generation pools must be constructed by this Controller before
+    // governance can whitelist them. Runtime bytecode and a self-reported
+    // controller are not construction provenance: a same-runtime contract can
+    // preload those storage slots during custom initialization.
+    mapping(address => bool) public poolRegistered;
+
+    event PoolCreated(address indexed pool, address indexed creator);
+
     // Holder of the veto power for whitelisting proposals
     address public vetoHolder;
 
-    // Runtime code expected for future-generation BasePool whitelist targets.
-    // This is immutable so a same-controller fake cannot be substituted later.
-    bytes32 public immutable basePoolCodeHash;
+    // Creation code expected by createPool. Deriving this from the imported
+    // source makes the trust root the audited build rather than deployer input.
+    bytes32 public immutable basePoolCreationCodeHash;
 
     // Cumulative vote weight already allocated for each token snapshot. The
     // zero address entry is the aggregate cursor; voter entries retain their
@@ -158,13 +166,42 @@ contract Controller is IController, ReentrancyGuard {
         lockPeriod = _lockPeriod;
         vetoHolder = _vetoHolder;
         vetoEpoch = 1;
-        basePoolCodeHash = keccak256(type(BasePool).runtimeCode);
+        basePoolCreationCodeHash = keccak256(type(BasePool).creationCode);
     }
 
     function supportsInterface(bytes4 interfaceId) override external view returns (bool) {
         return
             interfaceId == type(IERC165).interfaceId ||
             interfaceId == type(IController).interfaceId;
+    }
+
+    /**
+     * @notice Constructs a canonical BasePool with this Controller as its binding.
+     * @dev The caller supplies the canonical BasePool creation code and ABI-
+     *      encoded constructor arguments. The code hash check prevents custom
+     *      init code from being admitted, while the registry entry is written
+     *      only after the constructor returns and post-deployment checks pass.
+     * @param _creationCode Exact BasePool creation bytecode, without arguments.
+     * @param _encodedParams ABI-encoded BasePool constructor arguments.
+     */
+    function createPool(bytes calldata _creationCode, bytes calldata _encodedParams)
+        external
+        nonReentrant
+        returns (address pool)
+    {
+        require(keccak256(_creationCode) == basePoolCreationCodeHash, "Invalid pool creation code.");
+        bytes memory initCode = bytes.concat(_creationCode, _encodedParams);
+        assembly {
+            pool := create(0, add(initCode, 0x20), mload(initCode))
+        }
+        require(pool != address(0), "Pool creation failed.");
+        require(pool.code.length > 0, "Pool creation failed.");
+        require(
+            address(IBasePoolControllerBinding(pool).poolController()) == address(this),
+            "Invalid pool controller."
+        );
+        poolRegistered[pool] = true;
+        emit PoolCreated(pool, msg.sender);
     }
 
     /**
@@ -351,7 +388,7 @@ contract Controller is IController, ReentrancyGuard {
     function _validateWhitelistTarget(IPausable _target) internal view {
         address target = address(_target);
         require(target.code.length > 0, "Invalid pool target.");
-        require(target.codehash == basePoolCodeHash, "Invalid pool target.");
+        require(poolRegistered[target], "Pool not created by Controller.");
         require(
             address(IBasePoolControllerBinding(target).poolController()) == address(this),
             "Invalid pool controller."

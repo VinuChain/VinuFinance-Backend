@@ -50,6 +50,18 @@ contract P1ControllerAccountingTest is Test {
         internal
         returns (BasePool pool)
     {
+        pool = BasePool(controller.createPool(
+            type(BasePool).creationCode,
+            _poolConstructorArgs(loan, collateral, controller)
+        ));
+        assertTrue(controller.poolRegistered(address(pool)));
+    }
+
+    function _poolConstructorArgs(
+        RevenueP1Token loan,
+        RevenueP1Token collateral,
+        Controller controller
+    ) internal pure returns (bytes memory) {
         IERC20[] memory tokens = new IERC20[](2);
         tokens[0] = IERC20(address(loan));
         tokens[1] = IERC20(address(collateral));
@@ -59,18 +71,18 @@ contract P1ControllerAccountingTest is Test {
         uint256[] memory bounds = new uint256[](2);
         bounds[0] = 5_000;
         bounds[1] = 10_000;
-        pool = new BasePool(
+        return abi.encode(
             tokens,
-            18,
-            86_400,
-            1,
+            uint256(18),
+            uint256(86_400),
+            uint256(1),
             rates,
             bounds,
-            200,
-            0,
-            5_000,
-            IController(address(controller)),
-            1e18
+            uint256(200),
+            uint256(0),
+            uint256(5_000),
+            address(controller),
+            uint96(1e18)
         );
     }
 
@@ -170,7 +182,7 @@ contract P1ControllerAccountingTest is Test {
         _voteFor(controller, vote, IPausable(address(spoof)), 100);
         vm.prank(ALICE);
         controller.vote(1);
-        vm.expectRevert(bytes("Invalid pool target."));
+        vm.expectRevert(bytes("Pool not created by Controller."));
         controller.setVetoHolderApproval(1, true);
         assertFalse(controller.poolWhitelisted(address(spoof)));
 
@@ -179,6 +191,49 @@ contract P1ControllerAccountingTest is Test {
         controller.vote(2);
         vm.expectRevert(bytes("Invalid pool target."));
         controller.setVetoHolderApproval(2, true);
+    }
+
+    function test_factoryRejectsNonCanonicalCodeAndWrongController() public {
+        RevenueP1Token vote = new RevenueP1Token("Vote", "VOTE");
+        RevenueP1Token loan = new RevenueP1Token("Loan", "LOAN");
+        RevenueP1Token collateral = new RevenueP1Token("Collateral", "COLL");
+        Controller controller = _newController(vote);
+
+        vm.expectRevert(bytes("Invalid pool creation code."));
+        controller.createPool(hex"00", bytes(""));
+
+        Controller otherController = _newController(new RevenueP1Token("Other", "OTHER"));
+        vm.expectRevert(bytes("Invalid pool controller."));
+        controller.createPool(
+            type(BasePool).creationCode,
+            _poolConstructorArgs(loan, collateral, otherController)
+        );
+    }
+
+    function test_whitelistRejectsSameRuntimeWithPreloadedControllerStorage() public {
+        vm.warp(1_000_000);
+        RevenueP1Token vote = new RevenueP1Token("Vote", "VOTE");
+        RevenueP1Token loan = new RevenueP1Token("Loan", "LOAN");
+        RevenueP1Token collateral = new RevenueP1Token("Collateral", "COLL");
+        Controller controller = _newController(vote);
+        BasePool pool = _newPool(loan, collateral, controller);
+
+        address spoof = address(0x51504F4F4C);
+        // Model custom init code that returns the exact production runtime but
+        // preloads the poolController storage slot without running BasePool's
+        // constructor. This is the case runtime-hash validation cannot prove.
+        vm.etch(spoof, address(pool).code);
+        vm.store(spoof, bytes32(uint256(3)), bytes32(uint256(uint160(address(controller)))));
+        assertEq(spoof.codehash, address(pool).codehash);
+        assertEq(address(BasePool(spoof).poolController()), address(controller));
+        assertFalse(controller.poolRegistered(spoof));
+
+        _voteFor(controller, vote, IPausable(spoof), 100);
+        vm.prank(ALICE);
+        controller.vote(0);
+        vm.expectRevert(bytes("Pool not created by Controller."));
+        controller.setVetoHolderApproval(0, true);
+        assertFalse(controller.poolWhitelisted(spoof));
     }
 
     function test_vetoApprovalEpochInvalidatesAtoBtoAAndZeroRemainsLive() public {

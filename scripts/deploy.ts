@@ -29,6 +29,19 @@ const WHITELIST_THRESHOLD = 6000 // 60%
 const DEWHITELIST_THRESHOLD = 4000 // 40%
 const CONTROLLER_LOCK_PERIOD = 10
 const REWARD_COEFFICIENT = MONE.div(1000).toString()
+const POOL_CONSTRUCTOR_ARGS_ABI = [
+    'address[]',
+    'uint256',
+    'uint256',
+    'uint256',
+    'uint256[]',
+    'uint256[]',
+    'uint256',
+    'uint256',
+    'uint256',
+    'address',
+    'uint96',
+]
 
 var LOAN_CCY_TOKEN = 'INVALID_ADDRESS'
 var COLL_CCY_TOKEN = 'INVALID_ADDRESS'
@@ -210,7 +223,7 @@ async function deploy () {
     expect(await controllerContract.lockPeriod()).to.be.deep.equal(String(CONTROLLER_LOCK_PERIOD))
     expect(await controllerContract.vetoHolder()).to.be.deep.equal(String(deployer.address))
 
-    contract = await contractBlueprint.deploy(
+    const poolCreationParams = ethers.utils.defaultAbiCoder.encode(POOL_CONSTRUCTOR_ARGS_ABI, [
         [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
         DECIMALS,
         LOAN_TENOR,
@@ -220,9 +233,16 @@ async function deploy () {
         MIN_LOAN,
         CREATOR_FEE,
         MIN_LIQUIDITY,
-        controllerContract.address, 
-        REWARD_COEFFICIENT
-    )
+        controllerContract.address,
+        REWARD_COEFFICIENT,
+    ])
+    const poolCreationTx = await controllerContract.createPool(contractBlueprint.bytecode, poolCreationParams, { gasLimit: 8000000 })
+    const poolCreationReceipt = await poolCreationTx.wait()
+    const poolCreatedEvent = poolCreationReceipt.events?.find((event: any) => event.event === 'PoolCreated')
+    if (!poolCreatedEvent?.args?.pool) {
+        throw new Error('Controller.createPool did not emit PoolCreated')
+    }
+    contract = contractBlueprint.attach(poolCreatedEvent.args.pool)
     console.log('Contract deployed to:', contract.address)
 
     expect(contract.address).to.be.a('string')

@@ -430,7 +430,9 @@ contract FundSafetyTest is Test {
 
     function test_controllerExactDepositsAndOutboundDelta() public {
         ToggleFeeSafetyToken voteToken = new ToggleFeeSafetyToken("Vote", "VOTE");
-        Controller controller = new Controller(IERC20(address(voteToken)), 5000, 5000, 5000, 5000, 100, 0, address(this));
+        Controller controller = new Controller(
+            IERC20(address(voteToken)), 5000, 5000, 5000, 5000, 100, 0, address(this)
+        );
         _approveAndFund(voteToken, LP, 1_000, address(controller));
 
         voteToken.setFeeEnabled(true);
@@ -464,7 +466,9 @@ contract FundSafetyTest is Test {
         pool.addLiquidity{value: 1}(LP, MIN_LIQUIDITY + 1, block.timestamp, 0);
 
         SafetyToken voteToken = new SafetyToken("Vote", "VOTE");
-        Controller controller = new Controller(IERC20(address(voteToken)), 5000, 5000, 5000, 5000, 100, 0, address(this));
+        Controller controller = new Controller(
+            IERC20(address(voteToken)), 5000, 5000, 5000, 5000, 100, 0, address(this)
+        );
         _approveAndFund(voteToken, LP, 50, address(controller));
         address voterTwo = address(0x2222);
         _approveAndFund(voteToken, voterTwo, 50, address(controller));
@@ -676,16 +680,24 @@ contract FundSafetyTest is Test {
 
     function test_controllerRejectsZeroVoteTokenAndVetoHolder() public {
         vm.expectRevert(bytes("Invalid vote token."));
-        new Controller(IERC20(address(0)), 5000, 5000, 5000, 5000, 100, 0, address(this));
+        new Controller(
+            IERC20(address(0)), 5000, 5000, 5000, 5000, 100, 0, address(this)
+        );
 
         vm.expectRevert(bytes("Vote token must be a contract."));
-        new Controller(IERC20(address(0x1234)), 5000, 5000, 5000, 5000, 100, 0, address(this));
+        new Controller(
+            IERC20(address(0x1234)), 5000, 5000, 5000, 5000, 100, 0, address(this)
+        );
 
         SafetyToken voteToken = new SafetyToken("Vote", "VOTE");
         MetadataSafetyToken voteToken6 = new MetadataSafetyToken(6);
         vm.expectRevert(bytes("Vote token must use 18 decimals."));
-        new Controller(IERC20(address(voteToken6)), 5000, 5000, 5000, 5000, 100, 0, address(this));
+        new Controller(
+            IERC20(address(voteToken6)), 5000, 5000, 5000, 5000, 100, 0, address(this)
+        );
         vm.expectRevert(bytes("Invalid veto holder."));
-        new Controller(IERC20(address(voteToken)), 5000, 5000, 5000, 5000, 100, 0, address(0));
+        new Controller(
+            IERC20(address(voteToken)), 5000, 5000, 5000, 5000, 100, 0, address(0)
+        );
     }
 }

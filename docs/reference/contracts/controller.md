@@ -32,6 +32,7 @@ The Controller serves three main purposes:
 | `dewhitelistThreshold` | `uint256` | Votes needed to dewhitelist |
 | `lockPeriod` | `uint256` | Seconds before withdrawal allowed |
 | `vetoHolder` | `address` | Address with veto power |
+| `basePoolCreationCodeHash` | `bytes32` | Immutable `keccak256(type(BasePool).creationCode)` |
 
 ### Voting State
 
@@ -57,8 +58,34 @@ The Controller serves three main purposes:
 | `rewardSupply` | `uint256` | Available reward tokens |
 | `rewardBalance` | `mapping(address => uint256)` | Uncollected rewards per user |
 | `poolWhitelisted` | `mapping(address => bool)` | Pool whitelist status |
+| `poolRegistered` | `mapping(address => bool)` | Pools constructed by this Controller |
 
 ## Functions
+
+### Pool Construction
+
+#### createPool
+
+```solidity
+function createPool(bytes calldata creationCode, bytes calldata encodedParams) external returns (address pool)
+```
+
+Constructs a canonical `BasePool` bound to this Controller and records its
+construction provenance. The Controller constructor derives
+`basePoolCreationCodeHash` as `keccak256(type(BasePool).creationCode)`; it is
+not a constructor argument. `creationCode` must be the exact `BasePool`
+creation bytecode (without constructor arguments). `encodedParams` must be
+`abi.encode` of the BasePool constructor values in this order: `tokens`,
+`collTokenDecimals`, `loanTenor`, `maxLoanPerColl`, `rs`, `liquidityBnds`,
+`minLoan`, `creatorFee`, `minLiquidity`, `poolController` (this Controller),
+and `rewardCoefficient`. After deployment, the Controller checks the pool's
+Controller binding and records it in `poolRegistered`; only those registered
+pools can later be whitelisted.
+
+Direct `BasePool` deployments remain useful for isolated tests and for legacy
+read-only analysis, but cannot be newly whitelisted by this Controller.
+Deployment verification must confirm `basePoolCreationCodeHash` matches the
+audited release artifact's `BasePool` creation code.
 
 ### Vote Token Management
 
@@ -369,6 +396,7 @@ enum Action {
 
 | Event | Description |
 |-------|-------------|
+| `PoolCreated` | Canonical BasePool constructed and registered |
 | `ProposalCreated` | New proposal created |
 | `Voted` | Vote cast on proposal |
 | `Cancelled` | Vote removed from proposal |

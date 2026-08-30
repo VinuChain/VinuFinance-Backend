@@ -275,7 +275,8 @@ async function main() {
     const [deployer] = await ethers.getSigners();
     console.log("Deploying with:", deployer.address);
 
-    // Deploy Controller first (8 parameters)
+    // Controller derives and stores the exact BasePool creation-code hash
+    // internally; do not pass a hash constructor argument.
     const Controller = await ethers.getContractFactory("Controller");
     const controller = await Controller.deploy(
         voteTokenAddress,       // _voteToken
@@ -290,27 +291,29 @@ async function main() {
     await controller.deployed();
     console.log("Controller:", controller.address);
 
-    // Deploy BasePool (11 parameters with arrays)
+    // Create BasePool through Controller (provenance is required for whitelist)
     const BasePool = await ethers.getContractFactory("BasePool");
-    const pool = await BasePool.deploy(
-        [loanTokenAddress, collTokenAddress],  // _tokens array
-        18,                                     // _collTokenDecimals
-        loanTenor,                             // _loanTenor
-        maxLoanPerColl,                        // _maxLoanPerColl
-        [r1, r2],                              // _rs array
-        [liquidityBnd1, liquidityBnd2],        // _liquidityBnds array
-        minLoan,                               // _minLoan
-        creatorFee,                            // _creatorFee
-        minLiquidity,                          // _minLiquidity (new)
-        controller.address,                    // _poolController
-        rewardCoefficient                      // _rewardCoefficient
-    );
-    await pool.deployed();
+    const encodedPool = ethers.utils.defaultAbiCoder.encode([
+        "address[]", "uint256", "uint256", "uint256", "uint256[]", "uint256[]",
+        "uint256", "uint256", "uint256", "address", "uint96",
+    ], [[loanTokenAddress, collTokenAddress], 18, loanTenor, maxLoanPerColl,
+        [r1, r2], [liquidityBnd1, liquidityBnd2], minLoan, creatorFee,
+        minLiquidity, controller.address, rewardCoefficient
+    ]);
+    const poolTx = await controller.createPool(BasePool.bytecode, encodedPool, { gasLimit: 8_000_000 });
+    const poolReceipt = await poolTx.wait();
+    const poolEvent = poolReceipt.events.find((item) => item.event === "PoolCreated");
+    if (!poolEvent) throw new Error("PoolCreated event missing");
+    const pool = BasePool.attach(poolEvent.args.pool);
     console.log("BasePool:", pool.address);
 }
 
 main().catch(console.error);
 ```
+
+`Controller.createPool` accepts only the exact `BasePool` creation code, checks
+the deployed pool's Controller binding, and records the pool in
+`poolRegistered` before governance can whitelist it.
 
 ### Running Deployment
 

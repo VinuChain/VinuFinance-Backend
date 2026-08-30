@@ -104,7 +104,8 @@ async function main() {
     const WVC_ADDRESS = "0xEd8c5530a0A086a12f57275728128a60DFf04230";
     const USDT_ADDRESS = "0xC0264277fcCa5FCfabd41a8bC01c1FcAF8383E41";
 
-    // Deploy Controller (8 parameters)
+    // Controller derives and stores the exact BasePool creation-code hash
+    // internally; do not pass a hash constructor argument.
     console.log("\n1. Deploying Controller...");
     const Controller = await ethers.getContractFactory("Controller");
     const controller = await Controller.deploy(
@@ -120,29 +121,25 @@ async function main() {
     await controller.deployed();
     console.log("Controller:", controller.address);
 
-    // Deploy BasePool (USDT/WVC) - 11 parameters with arrays
-    console.log("\n2. Deploying BasePool (USDT/WVC)...");
+    // Create BasePool through Controller so its construction provenance is
+    // recorded before governance can whitelist it.
+    console.log("\n2. Creating BasePool (USDT/WVC) through Controller...");
     const BasePool = await ethers.getContractFactory("BasePool");
-    const pool = await BasePool.deploy(
-        [USDT_ADDRESS, WVC_ADDRESS],         // _tokens array
-        18,                                   // _collTokenDecimals
-        2592000,                             // _loanTenor (30 days)
-        ethers.utils.parseUnits("0.5", 18),  // _maxLoanPerColl
-        [                                    // _rs array — r1 > r2 required (r1 = rate at low liquidity, r2 = min rate)
-            ethers.utils.parseUnits("0.15", 18), // r1 = 15% (rate at low available liquidity)
-            ethers.utils.parseUnits("0.02", 18)  // r2 = 2%  (minimum rate)
-        ],
-        [                                    // _liquidityBnds array
-            ethers.utils.parseUnits("10000", 6), // 10k USDT bnd1
-            ethers.utils.parseUnits("100000", 6) // 100k USDT bnd2
-        ],
-        ethers.utils.parseUnits("100", 6),   // _minLoan
-        ethers.utils.parseUnits("0.01", 18), // _creatorFee (1%)
-        ethers.utils.parseUnits("1000", 6),  // _minLiquidity
-        controller.address,                  // _poolController
-        ethers.utils.parseUnits("1", 18)     // _rewardCoefficient
-    );
-    await pool.deployed();
+    const encodedPool = ethers.utils.defaultAbiCoder.encode([
+        "address[]", "uint256", "uint256", "uint256", "uint256[]", "uint256[]",
+        "uint256", "uint256", "uint256", "address", "uint96",
+    ], [[USDT_ADDRESS, WVC_ADDRESS], 18, 2592000,
+        ethers.utils.parseUnits("0.5", 6),
+        [ethers.utils.parseUnits("0.15", 18), ethers.utils.parseUnits("0.02", 18)],
+        [ethers.utils.parseUnits("10000", 6), ethers.utils.parseUnits("100000", 6)],
+        ethers.utils.parseUnits("100", 6), ethers.utils.parseUnits("0.01", 18),
+        ethers.utils.parseUnits("1000", 6), controller.address, ethers.utils.parseUnits("1", 18)
+    ]);
+    const poolTx = await controller.createPool(BasePool.bytecode, encodedPool, { gasLimit: 8_000_000 });
+    const poolReceipt = await poolTx.wait();
+    const poolEvent = poolReceipt.events.find((item) => item.event === "PoolCreated");
+    if (!poolEvent) throw new Error("PoolCreated event missing");
+    const pool = BasePool.attach(poolEvent.args.pool);
     console.log("BasePool (USDT/WVC):", pool.address);
 
     // Deploy helpers
@@ -150,7 +147,14 @@ async function main() {
     const MultiClaim = await ethers.getContractFactory("MultiClaim");
     const multiClaim = await MultiClaim.deploy();
     await multiClaim.deployed();
+    const multiClaimReceipt = await multiClaim.deployTransaction.wait();
     console.log("MultiClaim:", multiClaim.address);
+
+    const EmergencyWithdrawal = await ethers.getContractFactory("EmergencyWithdrawal");
+    const emergency = await EmergencyWithdrawal.deploy();
+    await emergency.deployed();
+    const emergencyReceipt = await emergency.deployTransaction.wait();
+    console.log("EmergencyWithdrawal:", emergency.address);
 
     // Summary
     console.log("\n========== DEPLOYMENT SUMMARY ==========");
@@ -158,19 +162,32 @@ async function main() {
     console.log("Controller:", controller.address);
     console.log("BasePool:", pool.address);
     console.log("MultiClaim:", multiClaim.address);
+    console.log("EmergencyWithdrawal:", emergency.address);
     console.log("=========================================");
 
-    // Save addresses
+    // Save structured deployment records. The BasePool record points to the
+    // Controller.createPool transaction that emitted PoolCreated.
     const fs = require("fs");
+    const recordFor = (contract, receipt) => ({
+        address: contract.address,
+        txHash: receipt.transactionHash,
+        blockNumber: receipt.blockNumber,
+        verification: false
+    });
+    const controllerReceipt = await controller.deployTransaction.wait();
     const addresses = {
         network: "vinuchain",
         chainId: 207,
         deployer: deployer.address,
         timestamp: new Date().toISOString(),
         contracts: {
-            Controller: controller.address,
-            "BasePool_USDT_WVC": pool.address,
-            MultiClaim: multiClaim.address
+            Controller: recordFor(controller, controllerReceipt),
+            BasePool: recordFor(pool, poolReceipt),
+            MultiClaim: recordFor(multiClaim, multiClaimReceipt),
+            EmergencyWithdrawal: recordFor(emergency, emergencyReceipt)
+        },
+        params: {
+            basePoolCreationCodeHash: await controller.basePoolCreationCodeHash()
         }
     };
     fs.writeFileSync(
@@ -256,6 +273,11 @@ npx hardhat verify --network vinuchain \
     "VETO_HOLDER_ADDRESS"
 ```
 
+The Controller derives `basePoolCreationCodeHash` internally as
+`keccak256(type(BasePool).creationCode)`. Confirm the deployed value matches
+the audited release artifact (the equivalent Hardhat value is
+`ethers.utils.keccak256(BasePool.bytecode)`).
+
 **2. BasePool Verification**
 
 Since BasePool uses array parameters, create a file `arguments.js`:
@@ -266,7 +288,7 @@ module.exports = [
     ["USDT_ADDRESS", "WVC_ADDRESS"],           // _tokens array
     18,                                         // _collTokenDecimals
     2592000,                                   // _loanTenor
-    "500000000000000000",                      // _maxLoanPerColl
+    "500000",                                  // _maxLoanPerColl (0.5 USDT; USDT has 6 decimals)
     ["150000000000000000", "20000000000000000"], // _rs array [r1, r2] = [15%, 2%] (r1 > r2)
     ["10000000000", "100000000000"],           // _liquidityBnds array
     "100000000",                               // _minLoan
@@ -303,8 +325,8 @@ VinuChain has low gas costs:
 
 | Operation | Estimated Gas | Cost (at 1 gwei) |
 |-----------|---------------|------------------|
-| Controller Deploy | ~3M | ~0.003 VC |
-| BasePool Deploy | ~4.5M | ~0.0045 VC |
+| Controller Deploy (measured) | ~4.06M | ~0.00406 VC |
+| `Controller.createPool` (BasePool, measured) | ~5.00M | ~0.00500 VC |
 | Add Liquidity | ~200k | ~0.0002 VC |
 | Borrow | ~250k | ~0.00025 VC |
 | Repay | ~150k | ~0.00015 VC |
@@ -402,15 +424,19 @@ connected chain is `207` (VinuChain mainnet). It refuses to run on any other cha
 npx hardhat run scripts/deploy.prod.ts --network vinuchain
 ```
 
-The script deploys, in order: **Controller -> BasePool -> MultiClaim ->
-EmergencyWithdrawal**, writes `deployments/vinuchain.json` (addresses + params +
-timestamp + deployer), and prints a summary and post-deploy checklist. It does
+The script deploys, in order: **Controller -> Controller-created BasePool ->
+MultiClaim -> EmergencyWithdrawal**, writes `deployments/vinuchain.json` with
+structured per-contract `address`, `txHash`, `blockNumber`, and
+`verification: false` records plus parameters and the BasePool creation-code
+hash, and prints a summary and post-deploy checklist. It does
 **not** mutate pool state (no whitelist proposal, no approvals, no smoke test) —
 those are the manual steps below.
 
 ### Post-Deploy Steps
 
-1. **Record** `deployments/vinuchain.json` (commit it, archive it, share addresses).
+1. **Record** `deployments/vinuchain.json` (commit it, archive it, share the
+   structured addresses, transaction hashes, block numbers, and verification
+   status).
 2. **Verify each new contract** on the explorer using the exact deployment-era
    standard JSON compiler input and constructor arguments recorded with the
    release. For immutable `legacy-mainnet-v1` addresses, stop and follow

@@ -39,13 +39,12 @@ const transpileContract = (path) => {
     let contractSrc = fs.readFileSync(path, { encoding : 'utf-8' })
     contractSrc = preprocessContract(contractSrc, path.endsWith('/BasePool.sol'))
 
-    // Controller records the BasePool runtime code hash when it is deployed.
-    // The test-only timestamp shim changes BasePool bytecode, so make the
-    // parsed controller hash the parsed pool bytecode as well.
+    // Controller derives the canonical BasePool creation hash from its import.
+    // Point the parsed controller at the timestamp-shimmed test pool too.
     if (path.endsWith('/Controller.sol')) {
         contractSrc = contractSrc
             .replace('import "./BasePool.sol";', 'import "./BasePool_parsed.sol";')
-            .replace('type(BasePool).runtimeCode', 'type(BasePool_parsed).runtimeCode')
+            .replace(/\bBasePool\b/g, 'BasePool_parsed')
     }
 
     const newPath = path.replace('.sol', '_parsed.sol')

@@ -180,7 +180,7 @@ const config = {
 
     // Loan terms
     loanTenor: 2592000,          // 30 days
-    maxLoanPerColl: ethers.utils.parseUnits("0.5", 18),  // 0.5 USDT per WVC
+    maxLoanPerColl: ethers.utils.parseUnits("0.5", 6),   // 0.5 USDT per WVC (USDT has 6 decimals)
     minLoan: ethers.utils.parseUnits("100", 6),  // 100 USDT min
 
     // Interest rates (passed as array)
@@ -207,28 +207,34 @@ const config = {
 
 ```javascript
 async function deployPool(config) {
+    // Controller.createPool is the only production creation path. The
+    // Controller derives keccak256(type(BasePool).creationCode) internally,
+    // then records construction provenance before governance can whitelist it.
+    const controller = await ethers.getContractAt("Controller", config.controller);
     const BasePool = await ethers.getContractFactory("BasePool");
-
-    const pool = await BasePool.deploy(
-        config.tokens,            // _tokens array
-        config.collTokenDecimals, // _collTokenDecimals
-        config.loanTenor,         // _loanTenor
-        config.maxLoanPerColl,    // _maxLoanPerColl
-        config.rs,                // _rs array
-        config.liquidityBnds,     // _liquidityBnds array
-        config.minLoan,           // _minLoan
-        config.creatorFee,        // _creatorFee
-        config.minLiquidity,      // _minLiquidity
-        config.controller,        // _poolController
-        config.rewardCoefficient  // _rewardCoefficient
-    );
-
-    await pool.deployed();
+    const encoded = ethers.utils.defaultAbiCoder.encode([
+        "address[]", "uint256", "uint256", "uint256", "uint256[]", "uint256[]",
+        "uint256", "uint256", "uint256", "address", "uint96",
+    ], [
+        config.tokens, config.collTokenDecimals, config.loanTenor,
+        config.maxLoanPerColl, config.rs, config.liquidityBnds, config.minLoan,
+        config.creatorFee, config.minLiquidity, controller.address, config.rewardCoefficient,
+    ]);
+    const tx = await controller.createPool(BasePool.bytecode, encoded, { gasLimit: 8_000_000 });
+    const receipt = await tx.wait();
+    const event = receipt.events.find((item) => item.event === "PoolCreated");
+    if (!event) throw new Error("PoolCreated event missing");
+    const pool = BasePool.attach(event.args.pool);
 
     console.log("Pool deployed:", pool.address);
     return pool;
 }
 ```
+
+`Controller.createPool` rejects any creation bytecode whose hash does not match
+the Controller's internal `keccak256(type(BasePool).creationCode)`. It then
+checks the deployed pool's Controller binding and records it in `poolRegistered`;
+only registered pools can be whitelisted.
 
 ## Pool Templates
 

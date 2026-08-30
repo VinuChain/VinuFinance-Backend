@@ -8,8 +8,9 @@
  *   - validates every address and parameter and aborts on anything missing,
  *     placeholder, or inconsistent,
  *   - targets VinuChain mainnet (chainId 207) and refuses any other chain,
- *   - deploys Controller -> BasePool -> MultiClaim -> EmergencyWithdrawal in that
- *     order, matching the real constructor signatures,
+ *   - deploys Controller -> Controller-created BasePool -> MultiClaim ->
+ *     EmergencyWithdrawal in that order, so every future pool has construction
+ *     provenance recorded by its Controller,
  *   - persists deployments/vinuchain.json and prints a post-deploy checklist.
  *
  * It deliberately does NOT mutate pool state (no whitelist proposal, no approvals,
@@ -33,12 +34,54 @@ import { ethers } from "hardhat"
 // VinuChain mainnet chain id; this script refuses to run anywhere else.
 const VINUCHAIN_CHAIN_ID = 207
 const MAX_TIMESTAMP = 0xffffffff
+const CREATE_POOL_GAS_LIMIT = 8_000_000
 
 // 10**18, used for BASE-denominated rate/fee/reward params.
 const MONE = BigNumber.from("1000000000000000000")
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+const POOL_CONSTRUCTOR_ARGS_ABI = [
+    "address[]",
+    "uint256",
+    "uint256",
+    "uint256",
+    "uint256[]",
+    "uint256[]",
+    "uint256",
+    "uint256",
+    "uint256",
+    "address",
+    "uint96",
+]
+
+function encodePoolCreationParams(values: {
+    tokens: string[]
+    collTokenDecimals: number
+    loanTenor: number
+    maxLoanPerColl: string
+    rs: string[]
+    liquidityBnds: string[]
+    minLoan: string
+    creatorFee: string
+    minLiquidity: string
+    poolController: string
+    rewardCoefficient: string
+}): string {
+    return ethers.utils.defaultAbiCoder.encode(POOL_CONSTRUCTOR_ARGS_ABI, [
+        values.tokens,
+        values.collTokenDecimals,
+        values.loanTenor,
+        values.maxLoanPerColl,
+        values.rs,
+        values.liquidityBnds,
+        values.minLoan,
+        values.creatorFee,
+        values.minLiquidity,
+        values.poolController,
+        values.rewardCoefficient,
+    ])
+}
 
 // --- env helpers ----------------------------------------------------------
 
@@ -452,64 +495,16 @@ async function main() {
     // ---- 1. Controller ----
     console.log("1. Deploying Controller...")
     const Controller = await hre.ethers.getContractFactory("Controller")
-    const controller = await Controller.deploy(
-        VOTE_TOKEN, // _voteToken
-        PAUSE_THRESHOLD, // _pauseThreshold
-        UNPAUSE_THRESHOLD, // _unpauseThreshold
-        WHITELIST_THRESHOLD, // _whitelistThreshold
-        DEWHITELIST_THRESHOLD, // _dewhitelistThreshold
-        SNAPSHOT_TOKEN_EVERY, // _snapshotEvery
-        CONTROLLER_LOCK_PERIOD, // _lockPeriod
-        VETO_HOLDER // _vetoHolder
-    )
-    await controller.deployed()
-    console.log("   Controller:", controller.address)
-
-    // ---- 2. BasePool ----
-    console.log("2. Deploying BasePool...")
     const BasePool = await hre.ethers.getContractFactory("BasePool")
-    const pool = await BasePool.deploy(
-        [LOAN_CCY_TOKEN, COLL_CCY_TOKEN], // _tokens [loanCcy, collCcy]
-        COLL_TOKEN_DECIMALS, // _collTokenDecimals
-        LOAN_TENOR, // _loanTenor
-        MAX_LOAN_PER_COLL, // _maxLoanPerColl
-        [R1, R2], // _rs [r1, r2]
-        [LIQUIDITY_BND_1, LIQUIDITY_BND_2], // _liquidityBnds [bnd1, bnd2]
-        MIN_LOAN, // _minLoan
-        CREATOR_FEE, // _creatorFee
-        MIN_LIQUIDITY, // _minLiquidity
-        controller.address, // _poolController
-        REWARD_COEFFICIENT // _rewardCoefficient
-    )
-    await pool.deployed()
-    console.log("   BasePool:", pool.address)
-
-    // ---- 3. MultiClaim (no constructor args) ----
-    console.log("3. Deploying MultiClaim...")
-    const MultiClaim = await hre.ethers.getContractFactory("MultiClaim")
-    const multiClaim = await MultiClaim.deploy()
-    await multiClaim.deployed()
-    console.log("   MultiClaim:", multiClaim.address)
-
-    // ---- 4. EmergencyWithdrawal (no constructor args) ----
-    console.log("4. Deploying EmergencyWithdrawal...")
-    const EmergencyWithdrawal = await hre.ethers.getContractFactory("EmergencyWithdrawal")
-    const emergencyWithdrawal = await EmergencyWithdrawal.deploy()
-    await emergencyWithdrawal.deployed()
-    console.log("   EmergencyWithdrawal:", emergencyWithdrawal.address)
-
-    // ---- persist deployment record ----
-    const record = {
+    const basePoolCreationCodeHash = ethers.utils.keccak256(BasePool.bytecode)
+    const outDir = path.join(__dirname, "..", "deployments")
+    const outFile = path.join(outDir, "vinuchain.json")
+    const record: any = {
         network: "vinuchain",
         chainId: VINUCHAIN_CHAIN_ID,
         deployer: deployer.address,
         timestamp: new Date().toISOString(),
-        contracts: {
-            Controller: controller.address,
-            BasePool: pool.address,
-            MultiClaim: multiClaim.address,
-            EmergencyWithdrawal: emergencyWithdrawal.address,
-        },
+        contracts: {},
         params: {
             loanCcyToken: LOAN_CCY_TOKEN,
             collCcyToken: COLL_CCY_TOKEN,
@@ -534,13 +529,99 @@ async function main() {
             dewhitelistThreshold: DEWHITELIST_THRESHOLD,
             snapshotTokenEvery: SNAPSHOT_TOKEN_EVERY,
             controllerLockPeriod: CONTROLLER_LOCK_PERIOD,
+            basePoolCreationCodeHash,
         },
     }
+    const saveRecord = () => {
+        fs.mkdirSync(outDir, { recursive: true })
+        fs.writeFileSync(outFile, JSON.stringify(record, null, 2))
+    }
+    const controller = await Controller.deploy(
+        VOTE_TOKEN, // _voteToken
+        PAUSE_THRESHOLD, // _pauseThreshold
+        UNPAUSE_THRESHOLD, // _unpauseThreshold
+        WHITELIST_THRESHOLD, // _whitelistThreshold
+        DEWHITELIST_THRESHOLD, // _dewhitelistThreshold
+        SNAPSHOT_TOKEN_EVERY, // _snapshotEvery
+        CONTROLLER_LOCK_PERIOD, // _lockPeriod
+        VETO_HOLDER // _vetoHolder
+    )
+    const controllerReceipt = await controller.deployTransaction.wait()
+    record.contracts.Controller = {
+        address: controller.address,
+        txHash: controller.deployTransaction.hash,
+        blockNumber: controllerReceipt.blockNumber,
+        verification: false,
+    }
+    saveRecord()
+    if ((await controller.basePoolCreationCodeHash()) !== basePoolCreationCodeHash) {
+        throw new Error("Controller recorded the wrong BasePool creation-code hash.")
+    }
+    console.log("   Controller:", controller.address)
 
-    const outDir = path.join(__dirname, "..", "deployments")
-    fs.mkdirSync(outDir, { recursive: true })
-    const outFile = path.join(outDir, "vinuchain.json")
-    fs.writeFileSync(outFile, JSON.stringify(record, null, 2))
+    // ---- 2. BasePool through Controller factory ----
+    console.log("2. Deploying BasePool through Controller...")
+    const poolCreationTx = await controller.createPool(BasePool.bytecode, encodePoolCreationParams({
+        tokens: [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
+        collTokenDecimals: COLL_TOKEN_DECIMALS,
+        loanTenor: LOAN_TENOR,
+        maxLoanPerColl: MAX_LOAN_PER_COLL,
+        rs: [R1, R2],
+        liquidityBnds: [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
+        minLoan: MIN_LOAN,
+        creatorFee: CREATOR_FEE,
+        minLiquidity: MIN_LIQUIDITY,
+        poolController: controller.address,
+        rewardCoefficient: REWARD_COEFFICIENT,
+    }), { gasLimit: CREATE_POOL_GAS_LIMIT })
+    const poolCreationReceipt = await poolCreationTx.wait()
+    const poolCreatedEvent = poolCreationReceipt.events?.find((event: any) => event.event === "PoolCreated")
+    if (poolCreationReceipt.status !== 1 || !poolCreatedEvent?.args?.pool) {
+        throw new Error("Controller.createPool did not emit a successful PoolCreated event.")
+    }
+    const pool = BasePool.attach(poolCreatedEvent.args.pool)
+    if (!(await controller.poolRegistered(pool.address)) || (await pool.poolController()) !== controller.address) {
+        throw new Error("Controller did not register a correctly bound BasePool.")
+    }
+    record.contracts.BasePool = {
+        address: pool.address,
+        txHash: poolCreationTx.hash,
+        blockNumber: poolCreationReceipt.blockNumber,
+        event: "PoolCreated",
+        creator: poolCreatedEvent.args.creator,
+        controller: controller.address,
+        verification: false,
+    }
+    saveRecord()
+    console.log("   BasePool:", pool.address)
+
+    // ---- 3. MultiClaim (no constructor args) ----
+    console.log("3. Deploying MultiClaim...")
+    const MultiClaim = await hre.ethers.getContractFactory("MultiClaim")
+    const multiClaim = await MultiClaim.deploy()
+    const multiClaimReceipt = await multiClaim.deployTransaction.wait()
+    record.contracts.MultiClaim = {
+        address: multiClaim.address,
+        txHash: multiClaim.deployTransaction.hash,
+        blockNumber: multiClaimReceipt.blockNumber,
+        verification: false,
+    }
+    saveRecord()
+    console.log("   MultiClaim:", multiClaim.address)
+
+    // ---- 4. EmergencyWithdrawal (no constructor args) ----
+    console.log("4. Deploying EmergencyWithdrawal...")
+    const EmergencyWithdrawal = await hre.ethers.getContractFactory("EmergencyWithdrawal")
+    const emergencyWithdrawal = await EmergencyWithdrawal.deploy()
+    const emergencyWithdrawalReceipt = await emergencyWithdrawal.deployTransaction.wait()
+    record.contracts.EmergencyWithdrawal = {
+        address: emergencyWithdrawal.address,
+        txHash: emergencyWithdrawal.deployTransaction.hash,
+        blockNumber: emergencyWithdrawalReceipt.blockNumber,
+        verification: false,
+    }
+    saveRecord()
+    console.log("   EmergencyWithdrawal:", emergencyWithdrawal.address)
 
     console.log("")
     console.log("=== DEPLOYMENT SUMMARY ===")

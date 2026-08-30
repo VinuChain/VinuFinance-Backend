@@ -69,6 +69,72 @@ const CONTROLLER_LOCK_PERIOD = 10
 // non-zero value re-runs every scenario with the reward bookkeeping fully active.
 const REWARD_COEFFICIENT = process.env.REWARD_COEFFICIENT ?? '0'
 
+const POOL_CONSTRUCTOR_ARGS_ABI = [
+    'address[]',
+    'uint256',
+    'uint256',
+    'uint256',
+    'uint256[]',
+    'uint256[]',
+    'uint256',
+    'uint256',
+    'uint256',
+    'address',
+    'uint96',
+]
+
+const createPoolThroughController = async (overrides: {
+    loanToken?: string
+    collateralToken?: string
+    collTokenDecimals?: number | string
+    loanTenor?: number | string
+    maxLoanPerColl?: string
+    rs?: string[]
+    liquidityBnds?: string[]
+    minLoan?: string
+    creatorFee?: string | number
+    minLiquidity?: string | number
+    rewardCoefficient?: string
+} = {}) => {
+    const params = {
+        loanToken: LOAN_CCY_TOKEN,
+        collateralToken: COLL_CCY_TOKEN,
+        collTokenDecimals: DECIMALS,
+        loanTenor: LOAN_TENOR,
+        maxLoanPerColl: MAX_LOAN_PER_COLL,
+        rs: [R1, R2],
+        liquidityBnds: [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
+        minLoan: MIN_LOAN,
+        creatorFee: CREATOR_FEE,
+        minLiquidity: MIN_LIQUIDITY,
+        poolController: controllerContract.address,
+        rewardCoefficient: REWARD_COEFFICIENT,
+        ...overrides,
+    }
+    const encodedParams = ethers.utils.defaultAbiCoder.encode(POOL_CONSTRUCTOR_ARGS_ABI, [
+        [params.loanToken, params.collateralToken],
+        params.collTokenDecimals,
+        params.loanTenor,
+        params.maxLoanPerColl,
+        params.rs,
+        params.liquidityBnds,
+        params.minLoan,
+        params.creatorFee,
+        params.minLiquidity,
+        params.poolController,
+        params.rewardCoefficient,
+    ])
+    // Production uses ~5m gas; this explicit ceiling stays below EIP-7825's
+    // 2^24 cap while also admitting coverage instrumentation.
+    const tx = await controllerContract.createPool(contractBlueprint.bytecode, encodedParams, { gasLimit: 16_000_000 })
+    const receipt = await tx.wait()
+    const poolCreatedEvent = receipt.events?.find((event: any) => event.event === 'PoolCreated')
+    if (!poolCreatedEvent?.args?.pool) {
+        throw new Error('Controller.createPool did not emit PoolCreated')
+    }
+    return contractBlueprint.attach(poolCreatedEvent.args.pool)
+}
+
 const Actions = {
     Pause : 0,
     Unpause : 1,
@@ -272,19 +338,7 @@ describe('test BasePool', function () {
             expect(await controllerContract.lockPeriod()).to.be.deep.equal(String(CONTROLLER_LOCK_PERIOD))
             expect(await controllerContract.vetoHolder()).to.be.deep.equal(String(deployer.address))
 
-            contract = await contractBlueprint.deploy(
-                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                DECIMALS,
-                LOAN_TENOR,
-                MAX_LOAN_PER_COLL,
-                [R1, R2],
-                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-                MIN_LOAN,
-                CREATOR_FEE,
-                MIN_LIQUIDITY,
-                controllerContract.address, 
-                REWARD_COEFFICIENT
-            )
+            contract = await createPoolThroughController()
 
             expect(contract.address).to.be.a('string')
 
@@ -337,19 +391,7 @@ describe('test BasePool', function () {
             expect(await controllerContract.lockPeriod()).to.be.deep.equal(String(CONTROLLER_LOCK_PERIOD))
             expect(await controllerContract.vetoHolder()).to.be.deep.equal(String(deployer.address))
 
-            contract = await contractBlueprint.deploy(
-                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                DECIMALS,
-                LOAN_TENOR,
-                MAX_LOAN_PER_COLL,
-                [R1, R2],
-                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-                MIN_LOAN,
-                CREATOR_FEE,
-                MIN_LIQUIDITY,
-                controllerContract.address, 
-                REWARD_COEFFICIENT
-            )
+            contract = await createPoolThroughController()
 
             expect(contract.address).to.be.a('string')
 
@@ -6179,19 +6221,16 @@ describe('test BasePool', function () {
                     setupCollateralToken = await metadataTokenBlueprint.deploy(String(setup.decimals))
                 }
 
-                contract = await contractBlueprint.deploy(
-                    [LOAN_CCY_TOKEN, setupCollateralToken.address],
-                    String(setup.decimals),
-                    LOAN_TENOR,
-                    String(setup.maxLoanPerColl),
-                    [String(setup.r1), String(setup.r2)],
-                    [String(setup.l1), String(setup.l2)],
-                    '1',
-                    String(setup.creatorFee),
-                    String(setup.minLiquidity),
-                    controllerContract.address, 
-                    REWARD_COEFFICIENT
-                )
+                contract = await createPoolThroughController({
+                    collateralToken: setupCollateralToken.address,
+                    collTokenDecimals: String(setup.decimals),
+                    maxLoanPerColl: String(setup.maxLoanPerColl),
+                    rs: [String(setup.r1), String(setup.r2)],
+                    liquidityBnds: [String(setup.l1), String(setup.l2)],
+                    minLoan: '1',
+                    creatorFee: String(setup.creatorFee),
+                    minLiquidity: String(setup.minLiquidity),
+                })
 
                 await whitelistContract()
 
@@ -6237,19 +6276,9 @@ describe('test BasePool', function () {
             expect(await controllerContract.lockPeriod()).to.be.deep.equal(String(CONTROLLER_LOCK_PERIOD))
             expect(await controllerContract.vetoHolder()).to.be.deep.equal(String(deployer.address))
 
-            contract = await contractBlueprint.deploy(
-                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                DECIMALS,
-                LOAN_TENOR,
-                MAX_LOAN_PER_COLL,
-                [R1, R2],
-                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-                MIN_LOAN,
-                MONE.mul(27).div(10000).toString(),
-                MIN_LIQUIDITY,
-                controllerContract.address,
-                REWARD_COEFFICIENT
-            )
+            contract = await createPoolThroughController({
+                creatorFee: MONE.mul(27).div(10000).toString(),
+            })
 
             await whitelistContract(true)
 
@@ -6498,19 +6527,10 @@ describe('test BasePool', function () {
                 deployer.address
             )
 
-            contract = await contractBlueprint.deploy(
-                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                DECIMALS,
-                LOAN_TENOR,
-                MAX_LOAN_PER_COLL,
-                [R1, R2],
-                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-                MIN_LOAN,
-                '0',
-                MIN_LIQUIDITY,
-                controllerContract.address, 
-                MONE.mul(567).div(100).toString()
-            )
+            contract = await createPoolThroughController({
+                creatorFee: 0,
+                rewardCoefficient: MONE.mul(567).div(100).toString(),
+            })
 
             await setTime(0)
             await setTime(0, controllerContract)
@@ -6617,7 +6637,10 @@ describe('test BasePool', function () {
         })
 
         it('does not turn dewhitelisted reward rejections into collectible debt', async function () {
-            const rewardPool = await createPoolThroughController(MONE.div(1000).toString(), 0)
+            const rewardPool = await createPoolThroughController({
+                rewardCoefficient: MONE.div(1000).toString(),
+                creatorFee: 0,
+            })
 
             const [manager] = await newUsers([[VOTE_TOKEN, 100000]])
             await controllerContract.connect(manager).depositVoteToken(100000)

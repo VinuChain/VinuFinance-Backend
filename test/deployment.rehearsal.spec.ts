@@ -1,7 +1,7 @@
 import { BigNumber } from "@ethersproject/bignumber"
 import { time } from "@nomicfoundation/hardhat-network-helpers"
 import chai from "chai"
-import { ethers } from "hardhat"
+import hre, { ethers } from "hardhat"
 
 const { expect } = chai
 
@@ -23,6 +23,48 @@ const COLLATERAL = ethers.utils.parseUnits("4", COLLATERAL_DECIMALS)
 
 function expectBigNumber(actual: any, expected: BigNumber | string | number) {
     expect(actual.toString()).to.equal(BigNumber.from(expected).toString())
+}
+
+const POOL_CONSTRUCTOR_ARGS_ABI = [
+    'address[]',
+    'uint256',
+    'uint256',
+    'uint256',
+    'uint256[]',
+    'uint256[]',
+    'uint256',
+    'uint256',
+    'uint256',
+    'address',
+    'uint96',
+]
+
+function encodePoolCreationParams(values: {
+    tokens: string[]
+    collTokenDecimals: number
+    loanTenor: number
+    maxLoanPerColl: BigNumber
+    rs: BigNumber[]
+    liquidityBnds: BigNumber[]
+    minLoan: BigNumber
+    creatorFee: BigNumber
+    minLiquidity: BigNumber
+    poolController: string
+    rewardCoefficient: BigNumber
+}) {
+    return ethers.utils.defaultAbiCoder.encode(POOL_CONSTRUCTOR_ARGS_ABI, [
+        values.tokens,
+        values.collTokenDecimals,
+        values.loanTenor,
+        values.maxLoanPerColl,
+        values.rs,
+        values.liquidityBnds,
+        values.minLoan,
+        values.creatorFee,
+        values.minLiquidity,
+        values.poolController,
+        values.rewardCoefficient,
+    ])
 }
 
 describe("production deployment rehearsal", function () {
@@ -48,6 +90,7 @@ describe("production deployment rehearsal", function () {
         await voteToken.deployed()
 
         const Controller = await ethers.getContractFactory("Controller")
+        const BasePool = await ethers.getContractFactory("BasePool")
         const controller = await Controller.deploy(
             voteToken.address,
             5000,
@@ -61,22 +104,32 @@ describe("production deployment rehearsal", function () {
         await controller.deployed()
         await assertDeployment(controller)
 
-        const BasePool = await ethers.getContractFactory("BasePool")
-        const pool = await BasePool.deploy(
-            [loanToken.address, collateralToken.address],
-            COLLATERAL_DECIMALS,
-            LOAN_TENOR,
-            MAX_LOAN_PER_COLL,
-            [R1, R2],
-            [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-            MIN_LOAN,
-            CREATOR_FEE,
-            MIN_LIQUIDITY,
-            controller.address,
-            REWARD_COEFFICIENT.toString(),
-        )
-        await pool.deployed()
-        await assertDeployment(pool)
+        // Keep this explicit and below EIP-7825's 2^24 cap. Production uses
+        // ~5m gas; the larger ceiling also admits coverage instrumentation.
+        const poolCreationTx = await controller.createPool(BasePool.bytecode, encodePoolCreationParams({
+            tokens: [loanToken.address, collateralToken.address],
+            collTokenDecimals: COLLATERAL_DECIMALS,
+            loanTenor: LOAN_TENOR,
+            maxLoanPerColl: MAX_LOAN_PER_COLL,
+            rs: [R1, R2],
+            liquidityBnds: [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
+            minLoan: MIN_LOAN,
+            creatorFee: CREATOR_FEE,
+            minLiquidity: MIN_LIQUIDITY,
+            poolController: controller.address,
+            rewardCoefficient: REWARD_COEFFICIENT,
+        }), { gasLimit: 16_000_000 })
+        const poolCreationReceipt = await poolCreationTx.wait()
+        if (!("__SOLIDITY_COVERAGE_RUNNING" in hre)) {
+            expect(poolCreationReceipt.gasUsed.lte(8_000_000)).to.equal(true)
+        }
+        const poolCreatedEvent = poolCreationReceipt.events?.find((event: any) => event.event === "PoolCreated")
+        expect(poolCreationReceipt.status).to.equal(1)
+        expect(poolCreatedEvent?.args?.pool).to.be.a("string")
+        const pool = BasePool.attach(poolCreatedEvent!.args!.pool)
+        expect(await ethers.provider.getCode(pool.address)).to.not.equal("0x")
+        expect(await controller.basePoolCreationCodeHash()).to.equal(ethers.utils.keccak256(BasePool.bytecode))
+        deploymentBlocks.push(poolCreationReceipt.blockNumber)
 
         const MultiClaim = await ethers.getContractFactory("MultiClaim")
         const multiClaim = await MultiClaim.deploy()
@@ -96,12 +149,11 @@ describe("production deployment rehearsal", function () {
             .map((address) => address.toLowerCase())
         expect(new Set(deployedAddresses).size).to.equal(4)
 
-        const poolCode = await ethers.provider.getCode(pool.address)
-        expect(await controller.basePoolCodeHash()).to.equal(ethers.utils.keccak256(poolCode))
         expect(await controller.voteToken()).to.equal(voteToken.address)
         expect(await controller.vetoHolder()).to.equal(deployer.address)
         expect(await pool.poolController()).to.equal(controller.address)
         expect(await controller.poolWhitelisted(pool.address)).to.equal(false)
+        expect(await controller.poolRegistered(pool.address)).to.equal(true)
 
         const poolInfo = await pool.getPoolInfo()
         expect(poolInfo[0]).to.equal(loanToken.address)
