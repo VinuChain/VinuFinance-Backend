@@ -1295,6 +1295,21 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     }
 
     /**
+     * @dev Reward accounting is optional for settlement and exits. A
+     *      dewhitelisted pool must not turn the Controller's expected
+     *      rejection into collectible debt. If the eligibility read itself
+     *      fails, preserve the existing debt path rather than silently losing
+     *      an otherwise eligible reward.
+     */
+    function _isPoolWhitelisted() internal view returns (bool) {
+        try IControllerWhitelist(address(poolController)).poolWhitelisted(address(this)) returns (bool whitelisted) {
+            return whitelisted;
+        } catch {
+            return true;
+        }
+    }
+
+    /**
      * @notice Helper function checks if function caller is a valid sender
      *
      * @dev This function is called by addLiquidity, removeLiquidity, repay,
@@ -1421,6 +1436,8 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
      * @param _timeSinceLastReward Time since the last reward was sent
      */
     function _sendReward(address _account, uint128 _liquidity, uint32 _timeSinceLastReward) internal {
+        if (!_isPoolWhitelisted()) return;
+
         // Retry at most the currently outstanding debt before recording a new
         // request. A failing or partially funded controller never blocks an LP
         // exit and never makes the missing reward invisible.
@@ -1481,6 +1498,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         returns (uint256 credited)
     {
         require(_maxAmount > 0, "Invalid reward amount.");
+        if (!_isPoolWhitelisted()) return 0;
         credited = _retryPendingReward(_account, _maxAmount);
     }
 

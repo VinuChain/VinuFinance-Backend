@@ -6616,6 +6616,67 @@ describe('test BasePool', function () {
             expect(await controllerContract.rewardBalance(alice.address)).to.equal(rewardBefore.add(topUp))
         })
 
+        it('does not turn dewhitelisted reward rejections into collectible debt', async function () {
+            const rewardPool = await createPoolThroughController(MONE.div(1000).toString(), 0)
+
+            const [manager] = await newUsers([[VOTE_TOKEN, 100000]])
+            await controllerContract.connect(manager).depositVoteToken(100000)
+
+            const whitelistProposal = await controllerContract.numProposals()
+            await controllerContract.connect(manager).createProposal(
+                rewardPool.address,
+                Actions.Whitelist,
+                1000000
+            )
+            await controllerContract.connect(manager).vote(whitelistProposal)
+            await controllerContract.connect(deployer).setVetoHolderApproval(
+                whitelistProposal,
+                true
+            )
+            expect(await controllerContract.poolWhitelisted(rewardPool.address)).to.equal(true)
+
+            const [alice] = await newUsers([[LOAN_CCY_TOKEN, 8000]])
+            await loanCcyTokenContract.connect(alice).approve(rewardPool.address, 8000)
+            await setTime(1, rewardPool)
+            await rewardPool.connect(alice).addLiquidity(alice.address, 8000, 10000, 0)
+
+            const dewhitelistProposal = await controllerContract.numProposals()
+            await controllerContract.connect(manager).createProposal(
+                rewardPool.address,
+                Actions.Dewhitelist,
+                1000000
+            )
+            await controllerContract.connect(manager).vote(dewhitelistProposal)
+            expect(await controllerContract.poolWhitelisted(rewardPool.address)).to.equal(false)
+
+            await setTime(101, rewardPool)
+            await rewardPool.connect(alice).forceRewardUpdate(alice.address)
+            expect(await rewardPool.pendingRewardDebt(alice.address)).to.equal(0)
+            expect(await controllerContract.rewardBalance(alice.address)).to.equal(0)
+
+            await setTime(122, rewardPool)
+            const lpInfo = await rewardPool.getLpInfo(alice.address)
+            const shares = lpInfo.sharesOverTime[lpInfo.sharesOverTime.length - 1]
+            await rewardPool.connect(alice).removeLiquidity(alice.address, shares)
+            expect(await loanCcyTokenContract.balanceOf(alice.address)).to.be.gt(0)
+
+            const rewhitelistProposal = await controllerContract.numProposals()
+            await controllerContract.connect(manager).createProposal(
+                rewardPool.address,
+                Actions.Whitelist,
+                1000000
+            )
+            await controllerContract.connect(manager).vote(rewhitelistProposal)
+            await controllerContract.connect(deployer).setVetoHolderApproval(
+                rewhitelistProposal,
+                true
+            )
+            expect(await controllerContract.poolWhitelisted(rewardPool.address)).to.equal(true)
+            await expect(
+                controllerContract.connect(alice).collectReward(false)
+            ).to.be.revertedWith('No reward to collect.')
+        })
+
         it('checks that rewards are distributed correctly with removeLiquidity', async function () {
             const [alice] = await newUsers([[LOAN_CCY_TOKEN, 100000]])
 
