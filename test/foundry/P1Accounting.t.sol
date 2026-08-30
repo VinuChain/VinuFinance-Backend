@@ -802,11 +802,23 @@ contract P1AccountingTest is Test {
         BasePool pool = _pool(loan, collateral);
         _fundAndApprove(loan, LP1, 20_000, address(pool));
 
+        // Deploy both pools while their configured tenor can still fit in the
+        // uint32 expiry domain. The boundary below exercises liquidity-time
+        // checks on an existing pool, not the constructor's tenor preflight.
+        BasePool secondPool = _pool(new P1Token("P1 loan 2", "P1L2"), new P1CollateralToken());
+        P1Token secondLoan = P1Token(address(_loanToken(secondPool)));
+        _fundAndApprove(secondLoan, LP2, 6_001, address(secondPool));
+
         vm.warp(type(uint32).max - 120);
         vm.prank(LP1);
         pool.addLiquidity(LP1, 6_001, block.timestamp, 0);
         (, uint32 earliestRemove, , , ) = pool.getLpInfo(LP1);
         assertEq(earliestRemove, type(uint32).max);
+
+        vm.warp(type(uint32).max - 119);
+        vm.expectRevert(bytes("Timestamp too large."));
+        vm.prank(LP2);
+        secondPool.addLiquidity(LP2, 6_001, block.timestamp, 0);
 
         vm.warp(type(uint32).max);
         vm.prank(LP1);
@@ -819,14 +831,6 @@ contract P1AccountingTest is Test {
         pool.forceRewardUpdate(LP1);
         vm.prank(LP1);
         pool.removeLiquidity(LP1, 1_200);
-
-        BasePool secondPool = _pool(new P1Token("P1 loan 2", "P1L2"), new P1CollateralToken());
-        P1Token secondLoan = P1Token(address(_loanToken(secondPool)));
-        _fundAndApprove(secondLoan, LP2, 6_001, address(secondPool));
-        vm.warp(type(uint32).max - 119);
-        vm.expectRevert(bytes("Timestamp too large."));
-        vm.prank(LP2);
-        secondPool.addLiquidity(LP2, 6_001, block.timestamp, 0);
     }
 
     function _loanToken(BasePool pool) internal view returns (IERC20 token) {
