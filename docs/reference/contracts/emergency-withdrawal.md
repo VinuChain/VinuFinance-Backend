@@ -105,7 +105,11 @@ function collectEmergency(
 ) external
 ```
 
-Withdraws all LP shares and sends funds to the original user.
+Withdraws the user's currently removable LP liquidity and sends it to the original user; unsettled or remaining claims are handled separately.
+
+The helper reads `BasePool.getCurrentLpShares()` rather than copying the LP's
+full share history, so an attacker-grown history does not make an emergency
+exit's entitlement lookup scale with array length.
 
 **Parameters:**
 
@@ -119,7 +123,7 @@ Withdraws all LP shares and sends funds to the original user.
 - User must have LP shares in the pool
 
 **Effects:**
-1. Calls `pool.removeLiquidity()` for all user's shares
+1. Calls `pool.removeLiquidity()` for the user's currently removable shares
 2. Transfers received tokens to `_onBehalfOf` (not caller)
 
 **Reverts if:**

@@ -80,7 +80,7 @@ Borrowers can obtain loans by pledging collateral:
 |-----------|-------------|
 | **Loan Amount** | Amount of loan currency received |
 | **Repayment Amount** | Amount required to reclaim collateral |
-| **Collateral** | Assets pledged (minus creator fee) |
+| **Collateral** | Assets pledged (minus the protocol fee) |
 | **Expiry** | Timestamp by which repayment is due |
 | **Interest** | `Repayment - Loan Amount` |
 
@@ -128,16 +128,18 @@ This encourages:
 - **High rates** when liquidity is scarce (attracts LPs)
 - **Low rates** when liquidity is abundant (attracts borrowers)
 
-## Creator Fee
+## Protocol Fee
 
-Each pool has a **creator fee** (max 3%) deducted from collateral:
+Each pool has a protocol fee (named `creatorFee` in the legacy ABI, max 3%)
+deducted from collateral:
 
 ```
-Pledge Amount = Collateral Sent - Creator Fee
-Creator Fee = Collateral Sent × Fee Rate / BASE
+Pledge Amount = Collateral Sent - Protocol Fee
+Protocol Fee = Collateral Sent × Fee Rate / BASE
 ```
 
-Creator fees are sent to the protocol treasury via the Controller.
+The fee is deposited in the Controller as protocol revenue and distributed
+through vote-token snapshots. It is not paid to the pool creator or a treasury.
 
 ## LP Rewards
 

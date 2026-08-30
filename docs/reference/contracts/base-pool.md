@@ -18,7 +18,7 @@ BasePool implements VinuFinance's Zero Liquidation Lending model where:
 | `MIN_LPING_PERIOD` | 120 | Minimum seconds between add and remove liquidity |
 | `MIN_TENOR` | 86400 | Minimum loan duration (1 day) |
 | `BASE` | 10^18 | Precision for rate calculations |
-| `MAX_FEE` | 3×10^16 | Maximum creator fee (3%) |
+| `MAX_FEE` | 3×10^16 | Maximum protocol revenue fee (3%) |
 
 ## State Variables
 
@@ -34,8 +34,8 @@ BasePool implements VinuFinance's Zero Liquidation Lending model where:
 | `minLoan` | `uint256` | Minimum loan size |
 | `minLiquidity` | `uint256` | Minimum required liquidity |
 | `collTokenDecimals` | `uint256` | Collateral token decimals |
-| `creatorFee` | `uint256` | Fee percentage (in BASE) |
-| `rewardCoefficient` | `uint96` | LP reward multiplier |
+| `creatorFee` | `uint256` | Protocol revenue fee percentage (in BASE) |
+| `rewardCoefficient` | `uint96` | LP reward multiplier applied to raw loan-token liquidity; configure scaling for 6-decimal loan pools |
 
 ### Rate Parameters
 
@@ -83,6 +83,7 @@ Adds liquidity to the pool.
 - Mints LP shares to `_onBehalfOf`
 - Updates reward tracking
 - Sets earliest removal time
+- Requires the pool to be currently whitelisted by its Controller
 
 **Example:**
 
@@ -142,7 +143,7 @@ Borrows from the pool by pledging collateral.
 
 | Name | Type | Description |
 |------|------|-------------|
-| `_onBehalfOf` | `address` | Loan recipient |
+| `_onBehalfOf` | `address` | Must equal the caller; recorded loan recipient |
 | `_sendAmount` | `uint128` | Collateral amount to pledge |
 | `_minLoanLimit` | `uint128` | Minimum acceptable loan |
 | `_maxRepayLimit` | `uint128` | Maximum acceptable repayment |
@@ -150,7 +151,9 @@ Borrows from the pool by pledging collateral.
 | `_referralCode` | `uint256` | Optional referral identifier |
 
 **Reverts if:**
+- Pool is not currently whitelisted by its Controller
 - Pool is paused
+- `_onBehalfOf` is not the caller (borrowing has no delegated authority)
 - Loan amount below `_minLoanLimit`
 - Repayment above `_maxRepayLimit`
 - Atomic add+borrow detected
@@ -220,6 +223,7 @@ Claims LP's share from settled loans.
 | `_deadline` | `uint256` | Deadline (only used if reinvesting) |
 
 **Reverts if:**
+- Reinvestment is requested while the pool is not currently whitelisted
 - Loan indices not ascending
 - Loans not settled (not repaid and not expired)
 - LP has no shares for those loans
@@ -289,6 +293,15 @@ function getLpInfo(address _lpAddr) external view returns (
 ```
 
 Returns complete LP information.
+
+### getCurrentLpShares
+
+```solidity
+function getCurrentLpShares(address _lpAddr) external view returns (uint256 currentShares)
+```
+
+Returns only the current LP share balance. Emergency exits use this O(1) getter;
+callers that need historical claim accounting should use `getLpInfo`.
 
 ---
 

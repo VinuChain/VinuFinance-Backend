@@ -8,8 +8,9 @@
  *   - validates every address and parameter and aborts on anything missing,
  *     placeholder, or inconsistent,
  *   - targets VinuChain mainnet (chainId 207) and refuses any other chain,
- *   - deploys Controller -> BasePool -> MultiClaim -> EmergencyWithdrawal in that
- *     order, matching the real constructor signatures,
+ *   - deploys Controller -> Controller-created BasePool -> MultiClaim ->
+ *     EmergencyWithdrawal in that order, so every future pool has construction
+ *     provenance recorded by its Controller,
  *   - persists deployments/vinuchain.json and prints a post-deploy checklist.
  *
  * It deliberately does NOT mutate pool state (no whitelist proposal, no approvals,
@@ -32,12 +33,55 @@ import { ethers } from "hardhat"
 
 // VinuChain mainnet chain id; this script refuses to run anywhere else.
 const VINUCHAIN_CHAIN_ID = 207
+const MAX_TIMESTAMP = 0xffffffff
+const CREATE_POOL_GAS_LIMIT = 8_000_000
 
 // 10**18, used for BASE-denominated rate/fee/reward params.
 const MONE = BigNumber.from("1000000000000000000")
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+const POOL_CONSTRUCTOR_ARGS_ABI = [
+    "address[]",
+    "uint256",
+    "uint256",
+    "uint256",
+    "uint256[]",
+    "uint256[]",
+    "uint256",
+    "uint256",
+    "uint256",
+    "address",
+    "uint96",
+]
+
+function encodePoolCreationParams(values: {
+    tokens: string[]
+    collTokenDecimals: number
+    loanTenor: number
+    maxLoanPerColl: string
+    rs: string[]
+    liquidityBnds: string[]
+    minLoan: string
+    creatorFee: string
+    minLiquidity: string
+    poolController: string
+    rewardCoefficient: string
+}): string {
+    return ethers.utils.defaultAbiCoder.encode(POOL_CONSTRUCTOR_ARGS_ABI, [
+        values.tokens,
+        values.collTokenDecimals,
+        values.loanTenor,
+        values.maxLoanPerColl,
+        values.rs,
+        values.liquidityBnds,
+        values.minLoan,
+        values.creatorFee,
+        values.minLiquidity,
+        values.poolController,
+        values.rewardCoefficient,
+    ])
+}
 
 // --- env helpers ----------------------------------------------------------
 
@@ -72,9 +116,12 @@ function envOr(name: string, fallback: string): string {
 function envIntOr(name: string, fallback: number): number {
     const v = process.env[name]
     if (v === undefined || v.trim() === "") return fallback
-    const n = Number(v)
-    if (!Number.isInteger(n) || n < 0) {
+    if (!/^\d+$/.test(v.trim())) {
         throw new Error(`Env var ${name} must be a non-negative integer: "${v}"`)
+    }
+    const n = Number(v)
+    if (!Number.isSafeInteger(n)) {
+        throw new Error(`Env var ${name} must be <= Number.MAX_SAFE_INTEGER: "${v}"`)
     }
     return n
 }
@@ -235,9 +282,42 @@ async function main() {
     if (LOAN_TENOR < 86400) {
         throw new Error(`LOAN_TENOR (${LOAN_TENOR}) must be >= 86400 (MIN_TENOR; BasePool.sol:130).`)
     }
+    if (LOAN_TENOR > MAX_TIMESTAMP) {
+        throw new Error(`LOAN_TENOR (${LOAN_TENOR}) must fit the uint32 expiry ceiling (BasePool.sol:130).`)
+    }
+    const latestBlock = await ethers.provider.getBlock("latest")
+    if (!latestBlock) {
+        throw new Error("Unable to read the latest block timestamp for BasePool expiry validation.")
+    }
+    if (LOAN_TENOR > MAX_TIMESTAMP - latestBlock.timestamp) {
+        throw new Error(
+            `LOAN_TENOR (${LOAN_TENOR}) plus current block.timestamp (${latestBlock.timestamp}) ` +
+                `must fit the uint32 expiry ceiling (BasePool.sol:134).`,
+        )
+    }
     // _maxLoanPerColl > 0 (BasePool.sol:131).
     if (BigNumber.from(MAX_LOAN_PER_COLL).lte(0)) {
         throw new Error(`MAX_LOAN_PER_COLL (${MAX_LOAN_PER_COLL}) must be > 0 (BasePool.sol:131).`)
+    }
+    const MAX_UINT256 = BigNumber.from(2).pow(256).sub(1)
+    const MAX_UINT128 = BigNumber.from(2).pow(128).sub(1)
+    const MAX_LOAN_RATIO = MAX_UINT256.div(MAX_UINT128.mul(2))
+    for (const [name, value] of [
+        ["R1", R1],
+        ["R2", R2],
+        ["MAX_LOAN_PER_COLL", MAX_LOAN_PER_COLL],
+        ["LIQUIDITY_BND_1", LIQUIDITY_BND_1],
+        ["LIQUIDITY_BND_2", LIQUIDITY_BND_2],
+        ["MIN_LOAN", MIN_LOAN],
+        ["MIN_LIQUIDITY", MIN_LIQUIDITY],
+        ["CREATOR_FEE", CREATOR_FEE],
+    ] as Array<[string, string]>) {
+        if (BigNumber.from(value).lt(0) || BigNumber.from(value).gt(MAX_UINT256)) {
+            throw new Error(`${name} (${value}) must fit uint256 BasePool arithmetic.`)
+        }
+    }
+    if (BigNumber.from(MAX_LOAN_PER_COLL).gt(MAX_LOAN_RATIO)) {
+        throw new Error(`MAX_LOAN_PER_COLL (${MAX_LOAN_PER_COLL}) exceeds the safe BasePool arithmetic bound.`)
     }
     // _rs[0] > _rs[1] && _rs[1] != 0 (BasePool.sol:132: reverts if r1 <= r2 || r2 == 0).
     if (BigNumber.from(R2).lte(0)) {
@@ -259,6 +339,9 @@ async function main() {
     if (BigNumber.from(MIN_LIQUIDITY).lt(1000)) {
         throw new Error(`MIN_LIQUIDITY (${MIN_LIQUIDITY}) must be >= 1000 (BasePool.sol:136).`)
     }
+    if (BigNumber.from(MIN_LIQUIDITY).gte(MAX_UINT128)) {
+        throw new Error(`MIN_LIQUIDITY (${MIN_LIQUIDITY}) must fit below uint128.max.`)
+    }
     // _minLoan > 0. The constructor does NOT validate minLoan, but minLoan == 0 BRICKS
     // the (immutable) pool: _addLiquidity requires `totalLpShares < minLoan * BASE`
     // (BasePool.sol:867), which with minLoan == 0 is `totalLpShares < 0` — always
@@ -268,6 +351,26 @@ async function main() {
             `MIN_LOAN (${MIN_LOAN}) must be > 0: minLoan == 0 bricks the pool ` +
                 `(_addLiquidity requires totalLpShares < minLoan * BASE; BasePool.sol:867).`
         )
+    }
+    if (BigNumber.from(MIN_LOAN).gt(MAX_UINT128)) {
+        throw new Error(`MIN_LOAN (${MIN_LOAN}) must fit uint128 loan accounting.`)
+    }
+    // In the reciprocal range, rate <= R1 * LIQUIDITY_BND_1 because available
+    // liquidity is at least one raw unit. Bound that peak so the smallest valid
+    // quote still fits LoanInfo.repayment (uint128). The +1/-1 account for the
+    // floor in Math.mulDiv and mirror BasePool's exact constructor check.
+    const minLoan = BigNumber.from(MIN_LOAN)
+    const maxRateForMinLoan = MAX_UINT128.sub(minLoan).add(1).mul(MONE).sub(1).div(minLoan)
+    const maxR1 = maxRateForMinLoan.div(BigNumber.from(LIQUIDITY_BND_1))
+    if (BigNumber.from(R1).gt(maxR1)) {
+        throw new Error(
+            `R1 (${R1}) is too large for MIN_LOAN (${MIN_LOAN}) and LIQUIDITY_BND_1 ` +
+                `(${LIQUIDITY_BND_1}); the minimum repayment would exceed uint128 ` +
+                `(BasePool.sol:180-191).`
+        )
+    }
+    if (BigNumber.from(MIN_LOAN).gt(MAX_UINT256.div(MONE))) {
+        throw new Error(`MIN_LOAN (${MIN_LOAN}) is too large for the BasePool share bound.`)
     }
     // _creatorFee in [0, MAX_FEE]. MAX_FEE = 300*10**14 = 3e16 = 0.03 * 1e18
     // (BasePool.sol:23,137). envBaseOr uses parseUnits, which ACCEPTS a negative human
@@ -322,8 +425,7 @@ async function main() {
     //   - all 3 must have contract code (getCode != 0x);
     //   - LOAN_CCY_TOKEN & COLL_CCY_TOKEN must expose decimals() (they ARE ERC20s and
     //     their decimals feed the economic params / loanTerms scaling);
-    //   - VOTE_TOKEN is the Controller's IERC20 voteToken — we verify it's a contract
-    //     and (cheaply) that it answers totalSupply(), without assuming its decimals.
+    //   - VOTE_TOKEN is the Controller's fixed 18-decimal governance/reward token.
     await assertIsContract("LOAN_CCY_TOKEN", LOAN_CCY_TOKEN)
     await assertIsContract("COLL_CCY_TOKEN", COLL_CCY_TOKEN)
     await assertIsContract("VOTE_TOKEN", VOTE_TOKEN)
@@ -332,11 +434,19 @@ async function main() {
     // here — the loan-denominated econ params are operator-provided raw units — but a
     // failed read means LOAN_CCY_TOKEN is not the ERC20 the operator thinks it is.
     const LOAN_TOKEN_DECIMALS = await readTokenDecimals("LOAN_CCY_TOKEN", LOAN_CCY_TOKEN)
+    const VOTE_TOKEN_DECIMALS = await readTokenDecimals("VOTE_TOKEN", VOTE_TOKEN)
+    if (VOTE_TOKEN_DECIMALS !== 18) {
+        throw new Error(`VOTE_TOKEN decimals (${VOTE_TOKEN_DECIMALS}) must be exactly 18 for Controller rewards.`)
+    }
 
     // Collateral decimals: QUERY on-chain and USE as the BasePool _collTokenDecimals
     // arg. BasePool.loanTerms scales by `10 ** collTokenDecimals` (BasePool.sol:654),
     // so a wrong value mis-collateralizes the pool for any non-18-decimal collateral.
     const COLL_TOKEN_DECIMALS = await readTokenDecimals("COLL_CCY_TOKEN", COLL_CCY_TOKEN)
+    const collateralScale = BigNumber.from(10).pow(COLL_TOKEN_DECIMALS)
+    if (BigNumber.from(MIN_LIQUIDITY).gt(MAX_UINT256.div(collateralScale.mul(2)))) {
+        throw new Error(`MIN_LIQUIDITY (${MIN_LIQUIDITY}) exceeds the safe collateral-decimal liquidity domain.`)
+    }
     // If the operator set the optional COLL_TOKEN_DECIMALS override, assert it matches
     // the on-chain value (catches a wrong override before any deploy).
     if (COLL_TOKEN_DECIMALS_OVERRIDE !== undefined && COLL_TOKEN_DECIMALS_OVERRIDE !== COLL_TOKEN_DECIMALS) {
@@ -346,8 +456,8 @@ async function main() {
         )
     }
 
-    // Vote token: confirm it answers a basic ERC20 view (totalSupply) so a non-token
-    // contract address is caught. Cheap, read-only; result is informational.
+    // Vote token: confirm it answers a basic ERC20 view so a non-token contract
+    // address is caught. Cheap, read-only; result is informational.
     try {
         const voteToken = new ethers.Contract(
             VOTE_TOKEN,
@@ -385,64 +495,16 @@ async function main() {
     // ---- 1. Controller ----
     console.log("1. Deploying Controller...")
     const Controller = await hre.ethers.getContractFactory("Controller")
-    const controller = await Controller.deploy(
-        VOTE_TOKEN, // _voteToken
-        PAUSE_THRESHOLD, // _pauseThreshold
-        UNPAUSE_THRESHOLD, // _unpauseThreshold
-        WHITELIST_THRESHOLD, // _whitelistThreshold
-        DEWHITELIST_THRESHOLD, // _dewhitelistThreshold
-        SNAPSHOT_TOKEN_EVERY, // _snapshotEvery
-        CONTROLLER_LOCK_PERIOD, // _lockPeriod
-        VETO_HOLDER // _vetoHolder
-    )
-    await controller.deployed()
-    console.log("   Controller:", controller.address)
-
-    // ---- 2. BasePool ----
-    console.log("2. Deploying BasePool...")
     const BasePool = await hre.ethers.getContractFactory("BasePool")
-    const pool = await BasePool.deploy(
-        [LOAN_CCY_TOKEN, COLL_CCY_TOKEN], // _tokens [loanCcy, collCcy]
-        COLL_TOKEN_DECIMALS, // _collTokenDecimals
-        LOAN_TENOR, // _loanTenor
-        MAX_LOAN_PER_COLL, // _maxLoanPerColl
-        [R1, R2], // _rs [r1, r2]
-        [LIQUIDITY_BND_1, LIQUIDITY_BND_2], // _liquidityBnds [bnd1, bnd2]
-        MIN_LOAN, // _minLoan
-        CREATOR_FEE, // _creatorFee
-        MIN_LIQUIDITY, // _minLiquidity
-        controller.address, // _poolController
-        REWARD_COEFFICIENT // _rewardCoefficient
-    )
-    await pool.deployed()
-    console.log("   BasePool:", pool.address)
-
-    // ---- 3. MultiClaim (no constructor args) ----
-    console.log("3. Deploying MultiClaim...")
-    const MultiClaim = await hre.ethers.getContractFactory("MultiClaim")
-    const multiClaim = await MultiClaim.deploy()
-    await multiClaim.deployed()
-    console.log("   MultiClaim:", multiClaim.address)
-
-    // ---- 4. EmergencyWithdrawal (no constructor args) ----
-    console.log("4. Deploying EmergencyWithdrawal...")
-    const EmergencyWithdrawal = await hre.ethers.getContractFactory("EmergencyWithdrawal")
-    const emergencyWithdrawal = await EmergencyWithdrawal.deploy()
-    await emergencyWithdrawal.deployed()
-    console.log("   EmergencyWithdrawal:", emergencyWithdrawal.address)
-
-    // ---- persist deployment record ----
-    const record = {
+    const basePoolCreationCodeHash = ethers.utils.keccak256(BasePool.bytecode)
+    const outDir = path.join(__dirname, "..", "deployments")
+    const outFile = path.join(outDir, "vinuchain.json")
+    const record: any = {
         network: "vinuchain",
         chainId: VINUCHAIN_CHAIN_ID,
         deployer: deployer.address,
         timestamp: new Date().toISOString(),
-        contracts: {
-            Controller: controller.address,
-            BasePool: pool.address,
-            MultiClaim: multiClaim.address,
-            EmergencyWithdrawal: emergencyWithdrawal.address,
-        },
+        contracts: {},
         params: {
             loanCcyToken: LOAN_CCY_TOKEN,
             collCcyToken: COLL_CCY_TOKEN,
@@ -467,13 +529,99 @@ async function main() {
             dewhitelistThreshold: DEWHITELIST_THRESHOLD,
             snapshotTokenEvery: SNAPSHOT_TOKEN_EVERY,
             controllerLockPeriod: CONTROLLER_LOCK_PERIOD,
+            basePoolCreationCodeHash,
         },
     }
+    const saveRecord = () => {
+        fs.mkdirSync(outDir, { recursive: true })
+        fs.writeFileSync(outFile, JSON.stringify(record, null, 2))
+    }
+    const controller = await Controller.deploy(
+        VOTE_TOKEN, // _voteToken
+        PAUSE_THRESHOLD, // _pauseThreshold
+        UNPAUSE_THRESHOLD, // _unpauseThreshold
+        WHITELIST_THRESHOLD, // _whitelistThreshold
+        DEWHITELIST_THRESHOLD, // _dewhitelistThreshold
+        SNAPSHOT_TOKEN_EVERY, // _snapshotEvery
+        CONTROLLER_LOCK_PERIOD, // _lockPeriod
+        VETO_HOLDER // _vetoHolder
+    )
+    const controllerReceipt = await controller.deployTransaction.wait()
+    record.contracts.Controller = {
+        address: controller.address,
+        txHash: controller.deployTransaction.hash,
+        blockNumber: controllerReceipt.blockNumber,
+        verification: false,
+    }
+    saveRecord()
+    if ((await controller.basePoolCreationCodeHash()) !== basePoolCreationCodeHash) {
+        throw new Error("Controller recorded the wrong BasePool creation-code hash.")
+    }
+    console.log("   Controller:", controller.address)
 
-    const outDir = path.join(__dirname, "..", "deployments")
-    fs.mkdirSync(outDir, { recursive: true })
-    const outFile = path.join(outDir, "vinuchain.json")
-    fs.writeFileSync(outFile, JSON.stringify(record, null, 2))
+    // ---- 2. BasePool through Controller factory ----
+    console.log("2. Deploying BasePool through Controller...")
+    const poolCreationTx = await controller.createPool(BasePool.bytecode, encodePoolCreationParams({
+        tokens: [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
+        collTokenDecimals: COLL_TOKEN_DECIMALS,
+        loanTenor: LOAN_TENOR,
+        maxLoanPerColl: MAX_LOAN_PER_COLL,
+        rs: [R1, R2],
+        liquidityBnds: [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
+        minLoan: MIN_LOAN,
+        creatorFee: CREATOR_FEE,
+        minLiquidity: MIN_LIQUIDITY,
+        poolController: controller.address,
+        rewardCoefficient: REWARD_COEFFICIENT,
+    }), { gasLimit: CREATE_POOL_GAS_LIMIT })
+    const poolCreationReceipt = await poolCreationTx.wait()
+    const poolCreatedEvent = poolCreationReceipt.events?.find((event: any) => event.event === "PoolCreated")
+    if (poolCreationReceipt.status !== 1 || !poolCreatedEvent?.args?.pool) {
+        throw new Error("Controller.createPool did not emit a successful PoolCreated event.")
+    }
+    const pool = BasePool.attach(poolCreatedEvent.args.pool)
+    if (!(await controller.poolRegistered(pool.address)) || (await pool.poolController()) !== controller.address) {
+        throw new Error("Controller did not register a correctly bound BasePool.")
+    }
+    record.contracts.BasePool = {
+        address: pool.address,
+        txHash: poolCreationTx.hash,
+        blockNumber: poolCreationReceipt.blockNumber,
+        event: "PoolCreated",
+        creator: poolCreatedEvent.args.creator,
+        controller: controller.address,
+        verification: false,
+    }
+    saveRecord()
+    console.log("   BasePool:", pool.address)
+
+    // ---- 3. MultiClaim (no constructor args) ----
+    console.log("3. Deploying MultiClaim...")
+    const MultiClaim = await hre.ethers.getContractFactory("MultiClaim")
+    const multiClaim = await MultiClaim.deploy()
+    const multiClaimReceipt = await multiClaim.deployTransaction.wait()
+    record.contracts.MultiClaim = {
+        address: multiClaim.address,
+        txHash: multiClaim.deployTransaction.hash,
+        blockNumber: multiClaimReceipt.blockNumber,
+        verification: false,
+    }
+    saveRecord()
+    console.log("   MultiClaim:", multiClaim.address)
+
+    // ---- 4. EmergencyWithdrawal (no constructor args) ----
+    console.log("4. Deploying EmergencyWithdrawal...")
+    const EmergencyWithdrawal = await hre.ethers.getContractFactory("EmergencyWithdrawal")
+    const emergencyWithdrawal = await EmergencyWithdrawal.deploy()
+    const emergencyWithdrawalReceipt = await emergencyWithdrawal.deployTransaction.wait()
+    record.contracts.EmergencyWithdrawal = {
+        address: emergencyWithdrawal.address,
+        txHash: emergencyWithdrawal.deployTransaction.hash,
+        blockNumber: emergencyWithdrawalReceipt.blockNumber,
+        verification: false,
+    }
+    saveRecord()
+    console.log("   EmergencyWithdrawal:", emergencyWithdrawal.address)
 
     console.log("")
     console.log("=== DEPLOYMENT SUMMARY ===")
@@ -485,6 +633,8 @@ async function main() {
     console.log("")
     console.log("=== POST-DEPLOY CHECKLIST (manual) ===")
     console.log("[ ] Commit/record deployments/vinuchain.json")
+    console.log("[ ] Submit exact deployment-era standard JSON source + constructor args to the explorer")
+    console.log("[ ] Validate VinuExplorer first: yarn verify:network")
     console.log("[ ] Verify each contract: npx hardhat verify --network vinuchain <addr> <args>")
     console.log("[ ] Update vinuchain-lists + frontend config with the new addresses")
     console.log(`[ ] Transfer Controller veto holder to the multisig (currently ${VETO_HOLDER})`)

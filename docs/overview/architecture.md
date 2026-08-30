@@ -199,11 +199,11 @@ EmergencyWithdrawal
 // Prevents atomic add liquidity + borrow
 mapping(address => uint256) lastAddOfTxOrigin;
 
-// Check for atomic operations and zero address
-if (
-    lastAddOfTxOrigin[tx.origin] == _timestamp ||
-    _onBehalfOf == address(0)
-) revert("Invalid operation.");
+// Borrowing is self-only
+if (_onBehalfOf == address(0)) revert("Invalid operation.");
+require(_onBehalfOf == msg.sender, "Borrower must be sender.");
+// Also prevent atomic add + borrow
+if (lastAddOfTxOrigin[tx.origin] == _timestamp) revert("Invalid operation.");
 ```
 
 ### Pausability

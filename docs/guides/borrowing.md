@@ -59,10 +59,14 @@ Before borrowing, query the terms you'll receive:
     uint128 loanAmount,       // What you'll receive
     uint128 repaymentAmount,  // What you'll owe
     uint128 pledgeAmount,     // Collateral needed
-    uint256 creatorFee,       // Pool creation fee
+    uint256 creatorFee,       // Protocol fee (legacy ABI name)
     uint256 totalLiquidity    // Available liquidity
 ) = pool.loanTerms(collateralAmount);
 ```
+
+Despite the legacy `creatorFee` ABI name, this is protocol revenue: it is
+deducted from the pledged collateral and deposited to the pool's Controller.
+It is not paid to the pool creator.
 
 **Example in JavaScript:**
 ```javascript
@@ -89,7 +93,7 @@ Call the `borrow` function:
 
 ```solidity
 function borrow(
-    address _onBehalfOf,    // Loan recipient
+    address _onBehalfOf,    // Must equal msg.sender; loan recipient
     uint128 _sendAmount,    // Collateral amount to pledge
     uint128 _minLoanLimit,  // Minimum acceptable loan
     uint128 _maxRepayLimit, // Maximum acceptable repayment
@@ -110,7 +114,7 @@ const collateral = ethers.utils.parseEther("100");
 const deadline = Math.floor(Date.now() / 1000) + 3600;
 
 await pool.borrow(
-    myAddress,      // Receive loan to my address
+    myAddress,      // Must be the connected caller; receives the loan
     collateral,     // Pledge 100 WVC
     minLoan,        // At least this much loan
     maxRepay,       // At most this repayment
@@ -260,8 +264,7 @@ Zero liquidation loans function like **put options** on your collateral:
 | Fee Type | Description |
 |----------|-------------|
 | Interest | Included in repayment amount |
-| Creator Fee | Small fee to pool creator |
-| Protocol Fee | Portion goes to governance stakers |
+| Protocol Fee (`creatorFee` in the legacy ABI) | Deducted from collateral and deposited in the Controller for vote-token snapshot distribution |
 
 All fees are known upfront before you borrow.
 
@@ -273,6 +276,12 @@ If a pool is paused by governance:
 - LPs can still claim and remove liquidity
 
 Check pool status before attempting to borrow.
+
+## Dewhitelisted Pools
+
+Controller dewhitelisting also blocks new deposits, borrowing, and claim
+reinvestment at the pool contract. Existing loans can still be repaid, and LPs
+can still remove liquidity or claim settled loans without reinvesting.
 
 ## Best Practices
 

@@ -72,6 +72,13 @@ interface IBasePool {
         uint256 indexed loanIdx
     );
 
+    event RewardDebtUpdated(
+        address indexed account,
+        uint256 requested,
+        uint256 credited,
+        uint256 pendingDebt
+    );
+
     event ApprovalUpdate(
         address ownerOrBeneficiary,
         address sender,
@@ -165,7 +172,9 @@ interface IBasePool {
 
     /**
      * @notice Function which allows borrowing from the pool
-     * @param _onBehalf Will become owner of the loan
+     * @dev Borrowing is self-only: the caller provides collateral, receives
+     * the loan proceeds, and becomes the recorded borrower.
+     * @param _onBehalf Must equal the caller and becomes owner of the loan
      * @param _sendAmount Amount of collateral to send
      * @param _minLoan Minimum loan currency amount acceptable to borrower
      * @param _maxRepay Maximum allowable loan currency amount borrower is willing to repay
@@ -213,6 +222,20 @@ interface IBasePool {
         uint256 _deadline
     ) external;
 
+    /**
+     * @notice Retries a bounded controller deposit for revenue held by the pool.
+     */
+    function flushPendingRevenue(IERC20 _token, uint256 _maxAmount)
+        external
+        returns (uint256 flushedAmount);
+
+    /**
+     * @notice Retries a bounded controller reward credit for an LP.
+     */
+    function retryPendingReward(address _account, uint256 _maxAmount)
+        external
+        returns (uint256 credited);
+
 
     /**
      * @notice Function which sets approval for another to perform a certain function on sender's behalf
@@ -244,6 +267,13 @@ interface IBasePool {
             uint256[] memory sharesOverTime,
             uint256[] memory loanIdxsWhereSharesChanged
         );
+
+    /**
+     * @notice Returns the current LP shares without copying share history
+     * @param _lpAddr Address for which current shares are retrieved
+     * @return currentShares The LP's current share balance
+     */
+    function getCurrentLpShares(address _lpAddr) external view returns (uint256 currentShares);
 
     /**
      * @notice Function which returns rate parameters need for interest rate calculation
@@ -298,7 +328,7 @@ interface IBasePool {
      * @return loanAmount Amount of loan currency to be trasnferred to the borrower
      * @return repaymentAmount Amount of loan currency borrower must repay to reclaim collateral
      * @return pledgeAmount Amount of collateral currency borrower retrieves upon repayment
-     * @return _creatorFee Amount of collateral currency to be transferred to treasury
+     * @return _creatorFee Amount of collateral currency deposited as protocol revenue
      * @return _totalLiquidity The total liquidity of the pool (pre-borrow) that is available for new loans
      */
     function loanTerms(

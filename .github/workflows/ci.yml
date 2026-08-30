@@ -36,15 +36,66 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "18"
+          node-version: "22"
 
       - name: Install dependencies
         run: yarn install --frozen-lockfile
+
+      - name: Typecheck backend
+        run: yarn typecheck
 
       - name: Compile + run test suite
         env:
           REWARD_COEFFICIENT: ${{ matrix.reward_coefficient }}
         run: npm test
+
+      - name: Production-equivalent deployment rehearsal
+        if: matrix.reward_coefficient == '1000000000000000'
+        run: yarn test:deployment
+
+      - name: Production coverage and gate
+        if: matrix.reward_coefficient == '1000000000000000'
+        env:
+          REWARD_COEFFICIENT: ${{ matrix.reward_coefficient }}
+        run: yarn coverage && yarn coverage:gate
+
+  # Dependency audit gate. Runtime dependencies are audited separately from
+  # the complete toolchain graph; both reject every critical or high advisory.
+  dependency-audit:
+    name: dependency-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Validate installed lockfile integrity
+        run: yarn check --integrity
+
+      - name: Test dependency audit policy
+        run: node --test scripts/audit_gate.test.js
+
+      - name: Validate VinuExplorer chain registration (no submission)
+        run: yarn verify:network
+
+      - name: Audit production dependency graph
+        run: |
+          set +e
+          yarn audit --groups dependencies --json > "$RUNNER_TEMP/yarn-audit-production.jsonl"
+          set -e
+          node scripts/audit_gate.js "$RUNNER_TEMP/yarn-audit-production.jsonl" production
+
+      - name: Audit full dependency graph
+        run: |
+          set +e
+          yarn audit --json > "$RUNNER_TEMP/yarn-audit-full.jsonl"
+          set -e
+          node scripts/audit_gate.js "$RUNNER_TEMP/yarn-audit-full.jsonl" full
 
   # Security invariant / property tests for the reward bookkeeping (Foundry).
   # forge-std is installed explicitly here (it is gitignored, not vendored) so
@@ -56,21 +107,29 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.5.1
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "18"
+          node-version: "22"
 
       # The Foundry harness imports @openzeppelin from node_modules.
       - name: Install node dependencies (for OpenZeppelin remapping)
         run: yarn install --frozen-lockfile
 
       - name: Install forge-std
-        run: forge install --no-git foundry-rs/forge-std
+        run: forge install --no-git foundry-rs/forge-std@rev=bf647bd6046f2f7da30d0c2bf435e5c76a780c1b
 
       - name: Run reward invariant / property tests
         run: forge test --match-path "test/foundry/*.t.sol" -vv
+
+      - name: Check gas regression snapshot
+        run: forge snapshot --check .gas-snapshot --match-path "test/foundry/*.t.sol"
+
+      - name: Verify compiler settings and deployed runtime bytecode
+        run: npm run verify:compiler
 
   # Static-analysis gate. Blocks the build on HIGH-severity findings only: the
   # baseline is clean at High. The protocol's known Medium/Low findings (the
@@ -78,7 +137,7 @@ jobs:
   # in BasePool, partial tuple destructuring, and the test mocks) are all analyzed
   # and remain visible as advisory Slither output without failing the build.
   # Pinned to slither 0.11.4 (the action container's Python<3.10 ceiling) for
-  # reproducibility; reuses the node-18 hardhat build via ignore-compile. This repo
+  # reproducibility; reuses the node-22 hardhat build via ignore-compile. This repo
   # is dual foundry+hardhat, so Slither is forced onto the hardhat framework
   # (artifacts/build-info) — otherwise crytic-compile auto-selects foundry and fails.
   slither:
@@ -88,7 +147,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
-          node-version: "18"
+          node-version: "22"
       - name: Install node dependencies (for OpenZeppelin imports)
         run: yarn install --frozen-lockfile
       - name: Compile (hardhat) so Slither reuses the verified build

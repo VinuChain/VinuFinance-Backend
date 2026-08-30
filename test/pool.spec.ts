@@ -4,6 +4,7 @@ import { BigNumber } from "@ethersproject/bignumber";
 import chai from "chai";
 import chaiAsPromised from "chai-as-promised";
 import { isNumberObject } from "util/types"
+import type { Contract, ContractFactory } from "ethers";
 
 
 import hre from 'hardhat'
@@ -14,12 +15,14 @@ const expect = chai.expect
 
 let deployer: any;
 
-let controllerContractBlueprint : hre.ethers.ContractFactory
-let contractBlueprint: ethers.ContractFactory
-let multiclaimContractBlueprint: ethers.ContractFactory
-let emergencyWithdrawalContractBlueprint: ethers.ContractFactory
-let feeOnTransferTokenBlueprint: ethers.ContractFactory
-let reentrantRevenueTokenBlueprint: ethers.ContractFactory
+let controllerContractBlueprint : ContractFactory
+let contractBlueprint: ContractFactory
+let multiclaimContractBlueprint: ContractFactory
+let emergencyWithdrawalContractBlueprint: ContractFactory
+let feeOnTransferTokenBlueprint: ContractFactory
+let reentrantRevenueTokenBlueprint: ContractFactory
+let zeroDecimalTokenBlueprint: ContractFactory
+let metadataTokenBlueprint: ContractFactory
 
 let controllerContract : any;
 let contract: any;
@@ -43,7 +46,7 @@ const R2 = MONE.mul(2).div(100).toString()
 const LIQUIDITY_BND_1 = '5000' //ONE_VITE.mul(100000).toString()
 const LIQUIDITY_BND_2 = '10000' //ONE_VITE.mul(1000000).toString()
 const MIN_LOAN = '200'//ONE_VITE.mul(100).toString()
-const DECIMALS = 0 //18
+const DECIMALS = 0
 const MIN_LIQUIDITY = 5000
 const MIN_LPING_PERIOD = 120
 
@@ -65,6 +68,72 @@ const CONTROLLER_LOCK_PERIOD = 10
 // (1e15). The suite's own equality assertions reference this same constant, so a
 // non-zero value re-runs every scenario with the reward bookkeeping fully active.
 const REWARD_COEFFICIENT = process.env.REWARD_COEFFICIENT ?? '0'
+
+const POOL_CONSTRUCTOR_ARGS_ABI = [
+    'address[]',
+    'uint256',
+    'uint256',
+    'uint256',
+    'uint256[]',
+    'uint256[]',
+    'uint256',
+    'uint256',
+    'uint256',
+    'address',
+    'uint96',
+]
+
+const createPoolThroughController = async (overrides: {
+    loanToken?: string
+    collateralToken?: string
+    collTokenDecimals?: number | string
+    loanTenor?: number | string
+    maxLoanPerColl?: string
+    rs?: string[]
+    liquidityBnds?: string[]
+    minLoan?: string
+    creatorFee?: string | number
+    minLiquidity?: string | number
+    rewardCoefficient?: string
+} = {}) => {
+    const params = {
+        loanToken: LOAN_CCY_TOKEN,
+        collateralToken: COLL_CCY_TOKEN,
+        collTokenDecimals: DECIMALS,
+        loanTenor: LOAN_TENOR,
+        maxLoanPerColl: MAX_LOAN_PER_COLL,
+        rs: [R1, R2],
+        liquidityBnds: [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
+        minLoan: MIN_LOAN,
+        creatorFee: CREATOR_FEE,
+        minLiquidity: MIN_LIQUIDITY,
+        poolController: controllerContract.address,
+        rewardCoefficient: REWARD_COEFFICIENT,
+        ...overrides,
+    }
+    const encodedParams = ethers.utils.defaultAbiCoder.encode(POOL_CONSTRUCTOR_ARGS_ABI, [
+        [params.loanToken, params.collateralToken],
+        params.collTokenDecimals,
+        params.loanTenor,
+        params.maxLoanPerColl,
+        params.rs,
+        params.liquidityBnds,
+        params.minLoan,
+        params.creatorFee,
+        params.minLiquidity,
+        params.poolController,
+        params.rewardCoefficient,
+    ])
+    // Production uses ~5m gas; this explicit ceiling stays below EIP-7825's
+    // 2^24 cap while also admitting coverage instrumentation.
+    const tx = await controllerContract.createPool(contractBlueprint.bytecode, encodedParams, { gasLimit: 16_000_000 })
+    const receipt = await tx.wait()
+    const poolCreatedEvent = receipt.events?.find((event: any) => event.event === 'PoolCreated')
+    if (!poolCreatedEvent?.args?.pool) {
+        throw new Error('Controller.createPool did not emit PoolCreated')
+    }
+    return contractBlueprint.attach(poolCreatedEvent.args.pool)
+}
 
 const Actions = {
     Pause : 0,
@@ -121,7 +190,7 @@ const checkEvents = async (tx, correct : Array<Object>, referenceContract : any 
     }
 }
 
-const checkQuery = async (methodName : string, params : Array<any>, expected : Array<any>, referenceContract : ethers.Contract | undefined = undefined) => {
+const checkQuery = async (methodName : string, params : Array<any>, expected : Array<any>, referenceContract : Contract | undefined = undefined) => {
     if (!referenceContract) {
         referenceContract = contract
     }
@@ -180,7 +249,7 @@ const newUsers = async (...tokenInfos : Array<Array<Array<String | Number>>>) =>
     return users
 }
 
-const setTime = async (newTime : Number, referenceContract : ethers.Contract | undefined = undefined) => {
+const setTime = async (newTime : Number, referenceContract : Contract | undefined = undefined) => {
     if (!referenceContract) {
         referenceContract = contract
     }
@@ -188,7 +257,8 @@ const setTime = async (newTime : Number, referenceContract : ethers.Contract | u
 }
 
 
-const whitelistContract = async () => {
+const whitelistContract = async (withdrawVoteToken = false) => {
+    if (await controllerContract.poolWhitelisted(contract.address)) return
     const [manager] = await newUsers([ [VOTE_TOKEN, 10000100] ])
     await controllerContract.connect(manager).depositRewardSupply('10000000')
 
@@ -199,6 +269,11 @@ const whitelistContract = async () => {
     await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
 
     await checkQuery('poolWhitelisted', [contract.address], [true], controllerContract)
+
+    if (withdrawVoteToken) {
+        await controllerContract.connect(manager).removeVote(0)
+        await controllerContract.connect(manager).withdrawVoteToken('100')
+    }
 }
 
 
@@ -214,12 +289,14 @@ describe('test BasePool', function () {
         const erc20Blueprint = await hre.ethers.getContractFactory('MockERC20')
         feeOnTransferTokenBlueprint = await hre.ethers.getContractFactory('FeeOnTransferMockERC20')
         reentrantRevenueTokenBlueprint = await hre.ethers.getContractFactory('ReentrantRevenueMockERC20')
+        zeroDecimalTokenBlueprint = await hre.ethers.getContractFactory('MockZeroDecimalERC20')
+        metadataTokenBlueprint = await hre.ethers.getContractFactory('MockDecimalsERC20')
 
         loanCcyTokenContract = await erc20Blueprint.deploy()
         LOAN_CCY_TOKEN = loanCcyTokenContract.address
 
 
-        collCcyTokenContract = await erc20Blueprint.deploy()
+        collCcyTokenContract = await zeroDecimalTokenBlueprint.deploy()
         COLL_CCY_TOKEN = collCcyTokenContract.address
 
         voteTokenContract = await erc20Blueprint.deploy()
@@ -261,19 +338,7 @@ describe('test BasePool', function () {
             expect(await controllerContract.lockPeriod()).to.be.deep.equal(String(CONTROLLER_LOCK_PERIOD))
             expect(await controllerContract.vetoHolder()).to.be.deep.equal(String(deployer.address))
 
-            contract = await contractBlueprint.deploy(
-                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                DECIMALS,
-                LOAN_TENOR,
-                MAX_LOAN_PER_COLL,
-                [R1, R2],
-                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-                MIN_LOAN,
-                CREATOR_FEE,
-                MIN_LIQUIDITY,
-                controllerContract.address, 
-                REWARD_COEFFICIENT
-            )
+            contract = await createPoolThroughController()
 
             expect(contract.address).to.be.a('string')
 
@@ -283,6 +348,10 @@ describe('test BasePool', function () {
                     0, 0, REWARD_COEFFICIENT, 1
                 ]
             )
+
+            await checkQuery('getRateParams', [], [
+                LIQUIDITY_BND_1, LIQUIDITY_BND_2, R1, R2
+            ])
 
             /*await checkEvents([{
                 loanCcyToken : LOAN_CCY_TOKEN,
@@ -322,19 +391,7 @@ describe('test BasePool', function () {
             expect(await controllerContract.lockPeriod()).to.be.deep.equal(String(CONTROLLER_LOCK_PERIOD))
             expect(await controllerContract.vetoHolder()).to.be.deep.equal(String(deployer.address))
 
-            contract = await contractBlueprint.deploy(
-                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                DECIMALS,
-                LOAN_TENOR,
-                MAX_LOAN_PER_COLL,
-                [R1, R2],
-                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-                MIN_LOAN,
-                CREATOR_FEE,
-                MIN_LIQUIDITY,
-                controllerContract.address, 
-                REWARD_COEFFICIENT
-            )
+            contract = await createPoolThroughController()
 
             expect(contract.address).to.be.a('string')
 
@@ -344,38 +401,43 @@ describe('test BasePool', function () {
                     0, 0, REWARD_COEFFICIENT, 1
                 ]
             )
+
         })
         describe('addLiquidity', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('adds liquidity', async function () {
                 const [alice] = await newUsers([ [LOAN_CCY_TOKEN, 10000] ])
 
                 console.log(alice.address)
 
-                const tx1 = await contract.connect(alice).addLiquidity(alice.address, '5000' ,150,0)
+                const tx1 = await contract.connect(alice).addLiquidity(alice.address, '5005' ,150,0)
 
                 console.log('Successfully added liquidity')
 
                 // If this is the first time adding liquidity, the shares are 1000 * deposited / minLiquidity
-                const newShares = 1000 * 5000 / MIN_LIQUIDITY
+                const newShares = 1000 * 5005 / MIN_LIQUIDITY
 
                 await checkQuery('getPoolInfo', [],
                     [
                         LOAN_CCY_TOKEN, COLL_CCY_TOKEN, MAX_LOAN_PER_COLL, MIN_LOAN, LOAN_TENOR,
-                        5000, newShares, REWARD_COEFFICIENT, 1
+                        5005, newShares, REWARD_COEFFICIENT, 1
                     ]
                 )
 
                 await checkQuery('getLpInfo', [alice.address],
-                    ['1', String(MIN_LPING_PERIOD), '0', [ '1000' ], []]
+                    ['1', String(MIN_LPING_PERIOD), '0', [ '1001' ], []]
                 )
 
                 await checkEvents(tx1, [
                     // DEFAULT_CONSTRUCTOR_EVENT,
                     {
                         lp : alice.address,
-                        amount : 5000,
+                        amount : 5005,
                         newLpShares : newShares,
-                        totalLiquidity : 5000,
+                        totalLiquidity : 5005,
                         totalLpShares : newShares,
                         earliestRemove : 0 + MIN_LPING_PERIOD,
                         loanIdx : 1,
@@ -387,17 +449,17 @@ describe('test BasePool', function () {
             it('adds liquidity multiple times', async function () {
                 const [alice] = await newUsers([ [LOAN_CCY_TOKEN, 10000] ])
 
-                const tx1 = await contract.connect(alice).addLiquidity(alice.address, '5000' ,150,0)
+                const tx1 = await contract.connect(alice).addLiquidity(alice.address, '6000' ,150,0)
                 // If this is the first time adding liquidity, the shares are 1000 * deposited / minLiquidity
-                const firstShares = 1000 * 5000 / MIN_LIQUIDITY
+                const firstShares = 1000 * 6000 / MIN_LIQUIDITY
 
                 await checkEvents(tx1, [
                     // DEFAULT_CONSTRUCTOR_EVENT,
                     {
                         lp : alice.address,
-                        amount : 5000,
+                        amount : 6000,
                         newLpShares : firstShares,
-                        totalLiquidity : 5000,
+                        totalLiquidity : 6000,
                         totalLpShares : firstShares,
                         earliestRemove : 0 + MIN_LPING_PERIOD,
                         loanIdx : 1,
@@ -408,19 +470,19 @@ describe('test BasePool', function () {
                 const tx2 = await contract.connect(alice).addLiquidity(alice.address, '2000' ,150,0)
 
                 // More shares, using deposited / liquidity * nShares
-                const secondShares = 2000 / 5000 * firstShares
+                const secondShares = 2000 / 6000 * firstShares
                 const totalShares = firstShares + secondShares
 
 
                 await checkQuery('getPoolInfo', [],
                     [
                         LOAN_CCY_TOKEN, COLL_CCY_TOKEN, MAX_LOAN_PER_COLL, MIN_LOAN, LOAN_TENOR,
-                        5000 + 2000, firstShares + secondShares, REWARD_COEFFICIENT, 1
+                        6000 + 2000, firstShares + secondShares, REWARD_COEFFICIENT, 1
                     ]
                 )
 
                 await checkQuery('getLpInfo', [alice.address],
-                    ['1', String(MIN_LPING_PERIOD), '0', [ '1400' ], []]
+                    ['1', String(MIN_LPING_PERIOD), '0', [ '1600' ], []]
                 )
 
                 await checkEvents(tx2, [
@@ -429,7 +491,7 @@ describe('test BasePool', function () {
                         lp : alice.address,
                         amount : 2000,
                         newLpShares : secondShares,
-                        totalLiquidity : 7000,
+                        totalLiquidity : 8000,
                         totalLpShares : totalShares,
                         earliestRemove : 0 + MIN_LPING_PERIOD,
                         loanIdx : 1,
@@ -477,15 +539,15 @@ describe('test BasePool', function () {
                 console.log('Bits:', bits)
                 await contract.connect(alice).setApprovals(bob.address, bits)
 
-                const tx1 = await contract.connect(bob).addLiquidity(alice.address, '5000' ,150,0)
+                const tx1 = await contract.connect(bob).addLiquidity(alice.address, '5005' ,150,0)
 
                 // If this is the first time adding liquidity, the shares are 1000 * deposited / minLiquidity
-                const newShares = 1000 * 5000 / MIN_LIQUIDITY
+                const newShares = 1000 * 5005 / MIN_LIQUIDITY
 
                 await checkQuery('getPoolInfo', [],
                     [
                         LOAN_CCY_TOKEN, COLL_CCY_TOKEN, MAX_LOAN_PER_COLL, MIN_LOAN, LOAN_TENOR,
-                        5000, newShares, REWARD_COEFFICIENT, 1
+                        5005, newShares, REWARD_COEFFICIENT, 1
                     ]
                 )
 
@@ -493,9 +555,9 @@ describe('test BasePool', function () {
                     // DEFAULT_CONSTRUCTOR_EVENT,
                     {
                         lp : alice.address,
-                        amount : 5000,
+                        amount : 5005,
                         newLpShares : newShares,
-                        totalLiquidity : 5000,
+                        totalLiquidity : 5005,
                         totalLpShares : newShares,
                         earliestRemove : 0 + MIN_LPING_PERIOD,
                         loanIdx : 1,
@@ -553,6 +615,10 @@ describe('test BasePool', function () {
         })
 
         describe('removeLiquidity', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('removes liquidity', async function () {
                 const [alice] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ])
 
@@ -807,6 +873,10 @@ describe('test BasePool', function () {
         })
 
         describe('borrow', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('borrows', async function () {
                 const [alice, bob] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ], [[COLL_CCY_TOKEN, 8000]])
 
@@ -950,23 +1020,31 @@ describe('test BasePool', function () {
                         0 // referralCode
                     )).to.be.revertedWith('Repayment above limit.')
             })
-            it('fails to borrow when the liquidity is below minimum', async function () {
+            it('rejects first liquidity at or below the minimum reserve', async function () {
                 const [alice, bob] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ], [[COLL_CCY_TOKEN, 8000]])
 
                 const liquidity = 4999
-                const collateralPledge = 500
-
-                await contract.connect(alice).addLiquidity(alice.address, String(liquidity) ,150,0)
-                
-                // The contract doesn't allow atomic addLiquidity+borrow
                 await setTime(1)
-
                 await expect(contract.connect(bob).borrow(bob.address, // onBehalfOf
-                        String(collateralPledge), 1, // minLoanLimit
+                        '1', 1, // minLoanLimit
                         10000, // maxRepayLimit
                         150, // deadline
                         0 // referralCode
                     )).to.be.revertedWith('Insufficient liquidity.')
+
+                await expect(contract.connect(alice).addLiquidity(alice.address, String(liquidity) ,150,0))
+                    .to.be.revertedWith('Initial liquidity must exceed minimum.')
+            })
+            it('rejects a loan index that cannot fit LP cursor timestamps', async function () {
+                await contract.setLoanIdx('4294967295')
+                await expect(contract.connect(deployer).borrow(
+                    deployer.address,
+                    '1',
+                    0,
+                    '340282366920938463463374607431768211455',
+                    150,
+                    0
+                )).to.be.revertedWith('Loan index too large.')
             })
             it('fails to borrow with zero collateral', async function () {
                 const [alice, bob] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ], [[COLL_CCY_TOKEN, 8000]])
@@ -1004,6 +1082,10 @@ describe('test BasePool', function () {
         })
 
         describe('repay', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('repays a loan', async function () {
                 const [alice, bob] = await newUsers(
                     [ [LOAN_CCY_TOKEN, 8000] ],
@@ -1339,6 +1421,10 @@ describe('test BasePool', function () {
         })
 
         describe('claim', function() {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('claims the repayment for a successful loan', async function () {
                 const [alice, bob] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ], [[LOAN_CCY_TOKEN, 8000], [COLL_CCY_TOKEN, 8000]])
 
@@ -1707,7 +1793,9 @@ describe('test BasePool', function () {
                 const loanAmount = 428
                 const repaymentAmount = 582
                 const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+                // Cumulative-floor accounting assigns the final residual to
+                // the second claimant so all repayment units are conserved.
+                const repaymentBob = repaymentAmount - repaymentAlice
 
                 //const shares2 = Math.floor((repaymentAmount - loanAmount) / (liquidity - loanAmount) * shares)
 
@@ -1866,7 +1954,9 @@ describe('test BasePool', function () {
                 const loanAmount = 428
                 const repaymentAmount = 582
                 const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+                // Cumulative-floor accounting assigns the final residual to
+                // the second claimant so all repayment units are conserved.
+                const repaymentBob = repaymentAmount - repaymentAlice
 
                 const shares2Alice = Math.floor(repaymentAmount / (liquidity - loanAmount) * sharesAlice)
                 const shares2Bob = Math.floor(repaymentAmount / (liquidity - loanAmount) * sharesBob)
@@ -2042,7 +2132,7 @@ describe('test BasePool', function () {
                 const loanAmount = 428
                 const repaymentAmount = 582
                 const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+                const repaymentBob = repaymentAmount - repaymentAlice
 
                 const shares2Alice = Math.floor(repaymentAmount / (liquidity - loanAmount) * sharesAlice)
                 const shares2Bob = Math.floor(repaymentAmount / (liquidity - loanAmount) * sharesBob)
@@ -2202,8 +2292,8 @@ describe('test BasePool', function () {
 
                 const [alice, bob, charlie] = await newUsers([ [LOAN_CCY_TOKEN, 10000] ], [[ LOAN_CCY_TOKEN, 10000]],  [[LOAN_CCY_TOKEN, 8000], [COLL_CCY_TOKEN, 8000]])
 
-                const liquidityAlice1 = 1000
-                const liquidityAlice2 = 5000
+                const liquidityAlice1 = 5005
+                const liquidityAlice2 = 995
                 // Liquidity after the borrow
                 const liquidityAlice3 = 2000
                 const liquidityAlice4 = 500
@@ -2223,7 +2313,9 @@ describe('test BasePool', function () {
                 const loanAmount = 428
                 const repaymentAmount = 582
                 const repaymentAlice = Math.floor(repaymentAmount * liquidityBeforeLoanAlice / liquidityBeforeLoan)
-                const repaymentBob = Math.floor(repaymentAmount * liquidityBeforeLoanBob / liquidityBeforeLoan)
+                // The final claimant receives the cumulative-floor residual so
+                // every repayment unit is conserved.
+                const repaymentBob = repaymentAmount - repaymentAlice
 
                 // Add the first batch of liquidity
 
@@ -2414,7 +2506,7 @@ describe('test BasePool', function () {
                         150
                     )
 
-                addLiquidity(Math.floor(repaymentAmount * sharesBeforeLoanAlice / sharesBeforeLoan), 'alice')
+                addLiquidity(repaymentAlice, 'alice')
 
                 await checkQuery('getPoolInfo', [],
                     [
@@ -2501,7 +2593,7 @@ describe('test BasePool', function () {
                         150
                     )
 
-                addLiquidity(Math.floor(repaymentAmount * sharesBeforeLoanBob / sharesBeforeLoan), 'bob')
+                addLiquidity(repaymentBob, 'bob')
 
                 await checkQuery('getPoolInfo', [],
                     [
@@ -2601,7 +2693,9 @@ describe('test BasePool', function () {
                 const repaymentAmount2 = 596
 
                 const repaymentAlice = Math.floor((repaymentAmount + repaymentAmount2) * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor((repaymentAmount + repaymentAmount2) * liquidityBob / liquidity)
+                // Cumulative-floor accounting assigns the final residual to
+                // the second claimant so all repayment units are conserved.
+                const repaymentBob = repaymentAmount + repaymentAmount2 - repaymentAlice
 
                 await contract.connect(alice).addLiquidity(alice.address, String(liquidityAlice) ,150,0)
 
@@ -2724,7 +2818,9 @@ describe('test BasePool', function () {
                 const repaymentAmount2 = 596
 
                 const repaymentAlice = Math.floor((repaymentAmount + repaymentAmount2) * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor((repaymentAmount + repaymentAmount2) * liquidityBob / liquidity)
+                // Cumulative-floor accounting assigns the final residual to
+                // the second claimant so all repayment units are conserved.
+                const repaymentBob = repaymentAmount + repaymentAmount2 - repaymentAlice
 
                 const shares2Alice = Math.floor((repaymentAmount + repaymentAmount2) / (liquidity - loanAmount - loanAmount2) * sharesAlice)
                 const shares2Bob = Math.floor((repaymentAmount + repaymentAmount2) / (liquidity - loanAmount - loanAmount2) * sharesBob)
@@ -3051,7 +3147,7 @@ describe('test BasePool', function () {
                         [2],
                         0,
                         150
-                )).to.be.revertedWith('Loan indexes with changing shares.')
+                )).to.be.revertedWith('Invalid claim range.')
             })
 
             it('fails to claim an already claimed loan', async function () {
@@ -3096,7 +3192,7 @@ describe('test BasePool', function () {
                         [1],
                         0,
                         150
-                    )).to.be.revertedWith('Unentitled from loan indices.')
+                    )).to.be.revertedWith('Invalid claim range.')
             })
         })
 
@@ -3270,6 +3366,8 @@ describe('test BasePool', function () {
 
                     // Proposal received 100 votes and wasn't executed
                     await checkQuery('getProposal', [0], [contract.address, String(Actions.Pause), '100', ZERO_ADDRESS, false, '150'], controllerContract)
+                    await checkQuery('getProposalVotes', [0, alice.address], [100], controllerContract)
+                    await checkQuery('getProposalVotes', [0, bob.address], [0], controllerContract)
                 })
 
                 it('votes on multiple proposals', async function () {
@@ -3662,7 +3760,7 @@ describe('test BasePool', function () {
                     expect(await controllerContract.getTokenSnapshot(COLL_CCY_TOKEN, 0)).to.be.deep.equal(['50', '100', '0', '19', '1'])
                 })
 
-                it('accounts transfer-fee revenue by actual tokens received', async function () {
+                it('rejects transfer-fee revenue deposits', async function () {
                     const [alice] = await newUsers([ [VOTE_TOKEN, 1000] ])
                     const feeTokenContract = await feeOnTransferTokenBlueprint.deploy()
 
@@ -3671,19 +3769,12 @@ describe('test BasePool', function () {
                     await setTime(19, controllerContract)
                     await controllerContract.connect(alice).depositVoteToken(String(50))
 
-                    await controllerContract.connect(alice).depositRevenue(feeTokenContract.address, '100')
+                    await expect(
+                        controllerContract.connect(alice).depositRevenue(feeTokenContract.address, '100')
+                    ).to.be.revertedWith('Unsupported token behavior.')
 
-                    expect(await feeTokenContract.balanceOf(controllerContract.address)).to.be.deep.equal('90')
-                    expect(await controllerContract.numTokenSnapshots(feeTokenContract.address)).to.be.deep.equal('1')
-                    expect(await controllerContract.getTokenSnapshot(feeTokenContract.address, 0)).to.be.deep.equal(['50', '90', '0', '19', '1'])
-
-                    const balanceBeforeClaim = await feeTokenContract.balanceOf(alice.address)
-                    await controllerContract.connect(alice).claimToken(feeTokenContract.address, 0, 0)
-                    const balanceAfterClaim = await feeTokenContract.balanceOf(alice.address)
-
-                    expect(balanceAfterClaim.sub(balanceBeforeClaim).toString()).to.be.equal('81')
-                    expect(await controllerContract.getTokenSnapshot(feeTokenContract.address, 0)).to.be.deep.equal(['50', '90', '90', '19', '1'])
                     expect(await feeTokenContract.balanceOf(controllerContract.address)).to.be.deep.equal('0')
+                    expect(await controllerContract.numTokenSnapshots(feeTokenContract.address)).to.be.deep.equal('0')
                 })
 
                 it('rejects reentrant revenue deposits during token transfer', async function () {
@@ -4700,44 +4791,14 @@ describe('test BasePool', function () {
 
                     expect(await controllerContract.voteTokenTotalSupply()).to.be.deep.equal('1000')
 
-                    // Alice has 10% of the voting power
-
+                    // An EOA cannot be converted into a reward-capable pool.
                     await controllerContract.connect(alice).createProposal(charlie.address, Actions.Whitelist, 150)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
                     await controllerContract.connect(alice).vote(0)
                     await controllerContract.connect(bob).vote(0)
-
-                    // Not yet executed: the veto holder hasn't set its approval
+                    await expect(
+                        controllerContract.connect(deployer).setVetoHolderApproval(0, true)
+                    ).to.be.revertedWith('Invalid pool target.')
                     await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
-                    await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [true], controllerContract)
-
-                    // Charlie is now a whitelisted pool. Request sending some tokens to Dan
-                    const liquidity = 452
-                    const duration = 3691
-                    const rewardCoefficient = MONE.mul(135).div(100).toString() // 1.35
-                    const reward = 2252248 // Precomputed
-
-                    const tx1 = await controllerContract.connect(charlie).requestTokenDistribution(dan.address, liquidity, duration, rewardCoefficient)
-
-                    await checkQuery('rewardSupply', [], [String(10000000 - reward)], controllerContract)
-                    
-                    await checkEvents(tx1, [{
-                        account : dan.address,
-                        liquidity,
-                        duration,
-                        rewardCoefficient,
-                        amount : reward
-                    }], controllerContract)
-
-                    await checkQuery('rewardBalance', [dan.address], [reward], controllerContract)
-
-                    await controllerContract.connect(dan).collectReward(false)
-                    expect(await voteTokenContract.balanceOf(dan.address)).to.be.deep.equal(String(reward))
                 })
 
                 it('collects the reward (with depositing)', async function () {
@@ -4750,56 +4811,13 @@ describe('test BasePool', function () {
 
                     expect(await controllerContract.voteTokenTotalSupply()).to.be.deep.equal('1000')
 
-                    // Alice has 10% of the voting power
-
                     await controllerContract.connect(alice).createProposal(charlie.address, Actions.Whitelist, 150)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
                     await controllerContract.connect(alice).vote(0)
                     await controllerContract.connect(bob).vote(0)
-
-                    // Not yet executed: the veto holder hasn't set its approval
+                    await expect(
+                        controllerContract.connect(deployer).setVetoHolderApproval(0, true)
+                    ).to.be.revertedWith('Invalid pool target.')
                     await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
-                    await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [true], controllerContract)
-
-                    // Charlie is now a whitelisted pool. Request sending some tokens to Dan
-                    const liquidity = 452
-                    const duration = 3691
-                    const rewardCoefficient = MONE.mul(135).div(100).toString() // 1.35
-                    const reward = 2252248 // Precomputed
-
-                    const tx1 = await controllerContract.connect(charlie).requestTokenDistribution(dan.address, liquidity, duration, rewardCoefficient)
-
-                    await checkQuery('rewardSupply', [], [String(10000000 - reward)], controllerContract)
-                    
-                    await checkEvents(tx1, [{
-                        account : dan.address,
-                        liquidity,
-                        duration,
-                        rewardCoefficient,
-                        amount : reward
-                    }], controllerContract)
-
-                    await checkQuery('rewardBalance', [dan.address], [reward], controllerContract)
-
-                    await setTime(123, controllerContract)
-
-                    const tx2 = await controllerContract.connect(dan).collectReward(true)
-                    expect(await voteTokenContract.balanceOf(dan.address)).to.be.deep.equal(String(0))
-                    await checkQuery('voteTokenBalance', [dan.address], [reward], controllerContract)
-                    await checkQuery('lastDepositTimestamp', [dan.address], [123], controllerContract)
-
-                    await checkEvents(tx2, [{
-                        account : dan.address,
-                        amount : reward,
-                        newBalance : reward,
-                        newTotalSupply : 100 + 900 + reward,
-                        subTimestamp: 0
-                    }], controllerContract)
                 })
 
                 it('fails to collect the reward when there is none', async function () {
@@ -5151,40 +5169,14 @@ describe('test BasePool', function () {
 
                     expect(await controllerContract.voteTokenTotalSupply()).to.be.deep.equal('1000')
 
-                    // Alice has 10% of the voting power
-
+                    // An EOA cannot be converted into a reward-capable pool.
                     await controllerContract.connect(alice).createProposal(charlie.address, Actions.Whitelist, 150)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
                     await controllerContract.connect(alice).vote(0)
                     await controllerContract.connect(bob).vote(0)
-
-                    // Not yet executed: the veto holder hasn't set its approval
+                    await expect(
+                        controllerContract.connect(deployer).setVetoHolderApproval(0, true)
+                    ).to.be.revertedWith('Invalid pool target.')
                     await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
-                    await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [true], controllerContract)
-
-                    // Charlie is now a whitelisted pool. Request sending some tokens to Dan
-                    const liquidity = 452
-                    const duration = 3691
-                    const rewardCoefficient = MONE.mul(135).div(100).toString() // 1.35
-                    const reward = 2252248 // Precomputed
-
-                    const tx1 = await controllerContract.connect(charlie).requestTokenDistribution(dan.address, liquidity, duration, rewardCoefficient)
-
-                    await checkQuery('rewardSupply', [], [String(10000000 - reward)], controllerContract)
-                    
-                    await checkEvents(tx1, [{
-                        account : dan.address,
-                        liquidity,
-                        duration,
-                        rewardCoefficient,
-                        amount : reward
-                    }], controllerContract)
-                    await checkQuery('rewardBalance', [dan.address], [reward], controllerContract)
                 })
 
                 it('fails to request token distribution without being whitelisted', async function () {
@@ -5215,37 +5207,22 @@ describe('test BasePool', function () {
 
                     expect(await controllerContract.voteTokenTotalSupply()).to.be.deep.equal('1000')
 
-                    // Alice has 10% of the voting power
-
                     await controllerContract.connect(alice).createProposal(charlie.address, Actions.Whitelist, 150)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
                     await controllerContract.connect(alice).vote(0)
                     await controllerContract.connect(bob).vote(0)
-
-                    // Not yet executed: the veto holder hasn't set its approval
+                    await expect(
+                        controllerContract.connect(deployer).setVetoHolderApproval(0, true)
+                    ).to.be.revertedWith('Invalid pool target.')
                     await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
-                    await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [true], controllerContract)
-
-                    // Charlie is now a whitelisted pool. Request sending some tokens to Dan
-                    const liquidity = 452
-                    const duration = 3691
-                    const rewardCoefficient = MONE.mul(135).div(100).toString() // 1.35
-
-                    await controllerContract.connect(charlie).requestTokenDistribution(
-                        dan.address, liquidity, duration, rewardCoefficient
-                    )
-
-                    await checkQuery('rewardBalance', [dan.address], ['1000000'], controllerContract)
                 })
             })
         })
 
         describe('MultiClaim', function () {
+            beforeEach(async function () {
+                await whitelistContract()
+            })
+
             it('checks that MultiClaim is equivalent to multiple claims', async function () {
                 await setTime(0, contract)
                 const multiclaimContract = await multiclaimContractBlueprint.deploy()
@@ -5524,6 +5501,44 @@ describe('test BasePool', function () {
                     ]
                 )
                 expect(await loanCcyTokenContract.balanceOf(alice.address)).to.be.deep.equal(String(8000 - liquidity))
+            })
+
+            it('transfers non-reinvested claims with exact token deltas', async function () {
+                await setTime(0, contract)
+                const multiclaimContract = await multiclaimContractBlueprint.deploy()
+                const [alice, bob] = await newUsers(
+                    [[LOAN_CCY_TOKEN, 8000]],
+                    [[LOAN_CCY_TOKEN, 12000], [COLL_CCY_TOKEN, 8000]],
+                )
+
+                await contract.connect(alice).setApprovals(
+                    multiclaimContract.address,
+                    approvalBits(['addLiquidity', 'claim']),
+                )
+                await contract.connect(alice).addLiquidity(alice.address, 8000, 150, 0)
+
+                await setTime(1, contract)
+                await contract.connect(bob).borrow(
+                    bob.address,
+                    500,
+                    200,
+                    10000,
+                    150,
+                    0,
+                )
+
+                await setTime(2, contract)
+                await contract.connect(bob).repay(1, bob.address)
+
+                const before = await loanCcyTokenContract.balanceOf(alice.address)
+                await multiclaimContract.connect(alice).claimMultiple(
+                    contract.address,
+                    [[1]],
+                    [false],
+                    150,
+                )
+
+                expect((await loanCcyTokenContract.balanceOf(alice.address)).sub(before)).to.equal(582)
             })
 
             it('fails to claim a loan with mismatched sizes', async function () {
@@ -5914,6 +5929,7 @@ describe('test BasePool', function () {
         describe('emergency withdrawal', function() {
             beforeEach(async function () {
                 emergencyWithdrawalContract = await emergencyWithdrawalContractBlueprint.deploy()
+                await whitelistContract()
             })
 
             it('correctly approves and unapproves', async function () {
@@ -6100,7 +6116,7 @@ describe('test BasePool', function () {
     
             it('checks that Controller supports IController', async function () {
                 await expect(
-                    controllerContract.supportsInterface('0xef5f8ff3')
+                    controllerContract.supportsInterface('0x200cadb7')
                 ).to.be.eventually.equal(true)
             })
         })
@@ -6200,19 +6216,23 @@ describe('test BasePool', function () {
                     deployer.address
                 )
     
-                contract = await contractBlueprint.deploy(
-                    [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                    String(setup.decimals),
-                    LOAN_TENOR,
-                    String(setup.maxLoanPerColl),
-                    [String(setup.r1), String(setup.r2)],
-                    [String(setup.l1), String(setup.l2)],
-                    '1',
-                    String(setup.creatorFee),
-                    String(setup.minLiquidity),
-                    controllerContract.address, 
-                    REWARD_COEFFICIENT
-                )
+                let setupCollateralToken = collCcyTokenContract
+                if (setup.decimals !== DECIMALS) {
+                    setupCollateralToken = await metadataTokenBlueprint.deploy(String(setup.decimals))
+                }
+
+                contract = await createPoolThroughController({
+                    collateralToken: setupCollateralToken.address,
+                    collTokenDecimals: String(setup.decimals),
+                    maxLoanPerColl: String(setup.maxLoanPerColl),
+                    rs: [String(setup.r1), String(setup.r2)],
+                    liquidityBnds: [String(setup.l1), String(setup.l2)],
+                    minLoan: '1',
+                    creatorFee: String(setup.creatorFee),
+                    minLiquidity: String(setup.minLiquidity),
+                })
+
+                await whitelistContract()
 
                 const [alice] = await newUsers([[LOAN_CCY_TOKEN, setup.tests[setup.tests.length - 1].liquidity]])
 
@@ -6256,19 +6276,11 @@ describe('test BasePool', function () {
             expect(await controllerContract.lockPeriod()).to.be.deep.equal(String(CONTROLLER_LOCK_PERIOD))
             expect(await controllerContract.vetoHolder()).to.be.deep.equal(String(deployer.address))
 
-            contract = await contractBlueprint.deploy(
-                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                DECIMALS,
-                LOAN_TENOR,
-                MAX_LOAN_PER_COLL,
-                [R1, R2],
-                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-                MIN_LOAN,
-                MONE.mul(27).div(10000).toString(),
-                MIN_LIQUIDITY,
-                controllerContract.address,
-                REWARD_COEFFICIENT
-            )
+            contract = await createPoolThroughController({
+                creatorFee: MONE.mul(27).div(10000).toString(),
+            })
+
+            await whitelistContract(true)
 
             await setTime(0)
             await setTime(0, controllerContract)
@@ -6464,6 +6476,42 @@ describe('test BasePool', function () {
                 REWARD_COEFFICIENT
             )).to.be.rejectedWith('Invalid Controller.')
         })
+
+        it('keeps failed revenue deposits retryable', async function () {
+            const mockFakeControllerBlueprint = await hre.ethers.getContractFactory('MockFakeController')
+            const mockFakeControllerContract = await mockFakeControllerBlueprint.deploy()
+            const fakePool = await contractBlueprint.deploy(
+                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
+                DECIMALS,
+                LOAN_TENOR,
+                MAX_LOAN_PER_COLL,
+                [R1, R2],
+                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
+                MIN_LOAN,
+                MONE.div(100),
+                MIN_LIQUIDITY,
+                mockFakeControllerContract.address,
+                REWARD_COEFFICIENT,
+            )
+
+            const [alice, bob] = await newUsers(
+                [[LOAN_CCY_TOKEN, 8000]],
+                [[LOAN_CCY_TOKEN, 8000], [COLL_CCY_TOKEN, 8000]],
+            )
+            await loanCcyTokenContract.connect(alice).approve(fakePool.address, 8000)
+            await collCcyTokenContract.connect(bob).approve(fakePool.address, 500)
+
+            await setTime(0, fakePool)
+            await fakePool.connect(alice).addLiquidity(alice.address, 8000, 150, 0)
+            await setTime(1, fakePool)
+            await fakePool.connect(bob).borrow(bob.address, 500, 200, 10000, 150, 0)
+
+            const pending = await fakePool.pendingRevenue(COLL_CCY_TOKEN)
+            expect(pending).to.be.gt(0)
+            expect(await fakePool.callStatic.flushPendingRevenue(COLL_CCY_TOKEN, pending)).to.equal(0)
+            await fakePool.flushPendingRevenue(COLL_CCY_TOKEN, pending)
+            expect(await fakePool.pendingRevenue(COLL_CCY_TOKEN)).to.equal(pending)
+        })
     })
 
     describe('reward requests', function () {
@@ -6479,19 +6527,10 @@ describe('test BasePool', function () {
                 deployer.address
             )
 
-            contract = await contractBlueprint.deploy(
-                [LOAN_CCY_TOKEN, COLL_CCY_TOKEN],
-                DECIMALS,
-                LOAN_TENOR,
-                MAX_LOAN_PER_COLL,
-                [R1, R2],
-                [LIQUIDITY_BND_1, LIQUIDITY_BND_2],
-                MIN_LOAN,
-                '0',
-                MIN_LIQUIDITY,
-                controllerContract.address, 
-                MONE.mul(567).div(100).toString()
-            )
+            contract = await createPoolThroughController({
+                creatorFee: 0,
+                rewardCoefficient: MONE.mul(567).div(100).toString(),
+            })
 
             await setTime(0)
             await setTime(0, controllerContract)
@@ -6532,15 +6571,15 @@ describe('test BasePool', function () {
             const coefficient = 5.67
 
             const time1 = 17
-            const liquidity1 = 321
+            const liquidity1 = 5321
             const reward1 = 0
 
             const time2 = 73
-            const liquidity2 = 1343
+            const liquidity2 = 6343
             const reward2 = Math.floor((time2 - time1) * liquidity1 * coefficient)
 
             const time3 = 985
-            const liquidity3 = 2245
+            const liquidity3 = 7245
             const reward3 = Math.floor((time3 - time2) * liquidity2 * coefficient)
 
             await setTime(time1)
@@ -6572,6 +6611,95 @@ describe('test BasePool', function () {
             await checkQuery('rewardBalance', [alice.address], [reward1 + reward2 + reward3], controllerContract)
         })
 
+        it('retries partially funded reward debt through the exact controller path', async function () {
+            const [alice] = await newUsers([[LOAN_CCY_TOKEN, 100000]])
+
+            await setTime(1)
+            await contract.connect(alice).addLiquidity(alice.address, 8000, 10000, 0)
+            await setTime(4294967295)
+            await contract.connect(alice).forceRewardUpdate(alice.address)
+
+            const debtBefore = await contract.pendingRewardDebt(alice.address)
+            expect(debtBefore).to.be.gt(0)
+
+            const topUp = BigNumber.from(1000)
+            await voteTokenContract.connect(deployer).mint(topUp)
+            await voteTokenContract.connect(deployer).approve(controllerContract.address, topUp)
+            await controllerContract.connect(deployer).depositRewardSupply(topUp)
+
+            const rewardBefore = await controllerContract.rewardBalance(alice.address)
+            const credited = await contract.callStatic.retryPendingReward(alice.address, topUp)
+            expect(credited).to.equal(topUp)
+            await contract.retryPendingReward(alice.address, topUp)
+
+            expect(await contract.pendingRewardDebt(alice.address)).to.equal(debtBefore.sub(topUp))
+            expect(await controllerContract.rewardBalance(alice.address)).to.equal(rewardBefore.add(topUp))
+        })
+
+        it('does not turn dewhitelisted reward rejections into collectible debt', async function () {
+            const rewardPool = await createPoolThroughController({
+                rewardCoefficient: MONE.div(1000).toString(),
+                creatorFee: 0,
+            })
+
+            const [manager] = await newUsers([[VOTE_TOKEN, 100000]])
+            await controllerContract.connect(manager).depositVoteToken(100000)
+
+            const whitelistProposal = await controllerContract.numProposals()
+            await controllerContract.connect(manager).createProposal(
+                rewardPool.address,
+                Actions.Whitelist,
+                1000000
+            )
+            await controllerContract.connect(manager).vote(whitelistProposal)
+            await controllerContract.connect(deployer).setVetoHolderApproval(
+                whitelistProposal,
+                true
+            )
+            expect(await controllerContract.poolWhitelisted(rewardPool.address)).to.equal(true)
+
+            const [alice] = await newUsers([[LOAN_CCY_TOKEN, 8000]])
+            await loanCcyTokenContract.connect(alice).approve(rewardPool.address, 8000)
+            await setTime(1, rewardPool)
+            await rewardPool.connect(alice).addLiquidity(alice.address, 8000, 10000, 0)
+
+            const dewhitelistProposal = await controllerContract.numProposals()
+            await controllerContract.connect(manager).createProposal(
+                rewardPool.address,
+                Actions.Dewhitelist,
+                1000000
+            )
+            await controllerContract.connect(manager).vote(dewhitelistProposal)
+            expect(await controllerContract.poolWhitelisted(rewardPool.address)).to.equal(false)
+
+            await setTime(101, rewardPool)
+            await rewardPool.connect(alice).forceRewardUpdate(alice.address)
+            expect(await rewardPool.pendingRewardDebt(alice.address)).to.equal(0)
+            expect(await controllerContract.rewardBalance(alice.address)).to.equal(0)
+
+            await setTime(122, rewardPool)
+            const lpInfo = await rewardPool.getLpInfo(alice.address)
+            const shares = lpInfo.sharesOverTime[lpInfo.sharesOverTime.length - 1]
+            await rewardPool.connect(alice).removeLiquidity(alice.address, shares)
+            expect(await loanCcyTokenContract.balanceOf(alice.address)).to.be.gt(0)
+
+            const rewhitelistProposal = await controllerContract.numProposals()
+            await controllerContract.connect(manager).createProposal(
+                rewardPool.address,
+                Actions.Whitelist,
+                1000000
+            )
+            await controllerContract.connect(manager).vote(rewhitelistProposal)
+            await controllerContract.connect(deployer).setVetoHolderApproval(
+                rewhitelistProposal,
+                true
+            )
+            expect(await controllerContract.poolWhitelisted(rewardPool.address)).to.equal(true)
+            await expect(
+                controllerContract.connect(alice).collectReward(false)
+            ).to.be.revertedWith('No reward to collect.')
+        })
+
         it('checks that rewards are distributed correctly with removeLiquidity', async function () {
             const [alice] = await newUsers([[LOAN_CCY_TOKEN, 100000]])
 
@@ -6593,7 +6721,8 @@ describe('test BasePool', function () {
 
             const time3 = 985
             const sharesRemoved3 = shares2
-            const liquidity3 = MIN_LIQUIDITY
+            // Full exits have no liquidity eligible for the next reward interval.
+            const liquidity3 = 0
             const reward3 = Math.floor((time3 - time2) * liquidity2 * coefficient)
 
             await setTime(time1)
@@ -6654,7 +6783,7 @@ describe('test BasePool', function () {
             const loanBob = Math.floor(loanAmount * liquidityBob / liquidity)
             const repaymentAmount = 582
             const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-            const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+            const repaymentBob = repaymentAmount - repaymentAlice
 
             const claimTimeAlice = 353
             const claimTimeBob = 424
@@ -6767,7 +6896,7 @@ describe('test BasePool', function () {
             const loanBob = Math.floor(loanAmount * liquidityBob / liquidity)
             const repaymentAmount = 582
             const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-            const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+            const repaymentBob = repaymentAmount - repaymentAlice
 
             const claimTimeAlice = 353
             const claimTimeBob = 424
@@ -6865,7 +6994,7 @@ describe('test BasePool', function () {
             const coefficient = 5.67
 
             const time1 = 17
-            const liquidity1 = 321
+            const liquidity1 = 5321
             const reward1 = 0
 
             const time2 = 73
@@ -6873,7 +7002,7 @@ describe('test BasePool', function () {
             const reward2 = Math.floor((time2 - time1) * liquidity1 * coefficient)
 
             const time3 = 985
-            const liquidity3 = 2245
+            const liquidity3 = 7245
             const reward3 = Math.floor((time3 - time2) * liquidity2 * coefficient)
 
             await setTime(time1)
@@ -6917,7 +7046,7 @@ describe('test BasePool', function () {
             const coefficient = 5.67
 
             const time1 = 17
-            const liquidity1 = 321
+            const liquidity1 = 5321
             const reward1 = 0
 
             const time2 = 73
@@ -6925,7 +7054,7 @@ describe('test BasePool', function () {
             const reward2 = Math.floor((time2 - time1) * liquidity1 * coefficient)
 
             const time3 = 985
-            const liquidity3 = 2245
+            const liquidity3 = 7245
             const reward3 = Math.floor((time3 - time2) * liquidity2 * coefficient)
 
             await setTime(time1)
@@ -6969,7 +7098,7 @@ describe('test BasePool', function () {
             await contract.connect(alice).setApprovals(bob.address, bits)
 
             const time1 = 17
-            const liquidity1 = 321
+            const liquidity1 = 5321
             const reward1 = 0
 
             const time2 = 73
@@ -7063,7 +7192,7 @@ describe('test BasePool', function () {
             const repaymentAmount = 582
             
             const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / totalLiquidity())
-            const repaymentBob = Math.floor(repaymentAmount * liquidityBob / totalLiquidity())
+            const repaymentBob = repaymentAmount - repaymentAlice
 
             await contract.connect(charlie).borrow(charlie.address, // onBehalfOf
                     String(collateralPledge), 200, // minLoanLimit

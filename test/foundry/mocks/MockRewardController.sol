@@ -14,8 +14,9 @@ import {IController} from "../../../contracts/interfaces/IController.sol";
  * `rewardSupply` into per-account `rewardBalance`, using
  * `amount = liquidity * duration * coefficient / REWARD_BASE`.
  *
- * It deliberately does NOT model governance/whitelisting so the harness can
- * exercise the BasePool reward bookkeeping in isolation. `requestTokenDistribution`
+ * It deliberately reports every pool as whitelisted rather than modelling
+ * governance, so the harness can exercise the BasePool reward bookkeeping in
+ * isolation. `requestTokenDistribution`
  * succeeds (does not revert) so the pool's try/catch swallow path is NOT what
  * keeps the test green — any reward-arithmetic underflow surfaces in BasePool itself.
  */
@@ -42,6 +43,10 @@ contract MockRewardController is IController {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IController).interfaceId;
     }
 
+    function poolWhitelisted(address) external pure returns (bool) {
+        return true;
+    }
+
     function depositRevenue(IERC20, uint256) external payable override {
         // No-op: revenue accounting is out of scope for the reward invariant.
     }
@@ -51,18 +56,29 @@ contract MockRewardController is IController {
         uint128 _liquidity,
         uint32 _duration,
         uint96 _rewardCoefficient
-    ) external override {
+    ) external override returns (uint256 amount) {
         distributionCalls++;
         if (uint256(_liquidity) > maxLiquidityRequested) {
             maxLiquidityRequested = uint256(_liquidity);
         }
-        uint256 amount = (uint256(_liquidity) * uint256(_duration) * uint256(_rewardCoefficient)) / REWARD_BASE;
+        amount = (uint256(_liquidity) * uint256(_duration) * uint256(_rewardCoefficient)) / REWARD_BASE;
         if (amount > rewardSupply) {
             amount = rewardSupply;
         }
         unchecked {
             rewardSupply -= amount;
         }
+        rewardBalance[_account] += amount;
+        totalDistributed += amount;
+    }
+
+    function requestTokenDistributionExact(address _account, uint256 _amount)
+        external
+        override
+        returns (uint256 amount)
+    {
+        amount = _amount > rewardSupply ? rewardSupply : _amount;
+        rewardSupply -= amount;
         rewardBalance[_account] += amount;
         totalDistributed += amount;
     }

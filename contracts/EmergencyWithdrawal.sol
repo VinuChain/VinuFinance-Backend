@@ -85,7 +85,7 @@ contract EmergencyWithdrawal is ReentrancyGuard {
         return approved[_user][_pool][_escrow];
     }
 
-    /// @notice Withdraws all of a user's funds from a pool and returns them to the user
+    /// @notice Withdraws the user's currently removable liquidity and returns it to the user
     ///
     /// @dev This function is only callable by an escrow that has been approved by the user
     ///      Note that this means that unless a user approves itself, it cannot withdraw its own funds
@@ -101,18 +101,22 @@ contract EmergencyWithdrawal is ReentrancyGuard {
             "Not approved"
         );
 
+        // Consume the helper approval before the first external call. If any
+        // later operation reverts, EVM atomicity restores this approval and
+        // rolls back the event as well; a successful withdrawal is one-shot.
+        approved[_onBehalfOf][address(_pool)][msg.sender] = false;
+        emit Unapproved(_onBehalfOf, address(_pool), msg.sender);
+
         (IERC20 token, , , , , , , , ) = _pool.getPoolInfo();
 
         // Store the amount of tokens before the withdraw
         uint256 amountBefore = token.balanceOf(address(this));
 
-        (, , , uint256[] memory sharesOverTime, ) = _pool.getLpInfo(
-            _onBehalfOf
-        );
-
-        // Get the last number of shares
-        require(sharesOverTime.length > 0, "No shares");
-        uint128 shares = uint128(sharesOverTime[sharesOverTime.length - 1]);
+        // Read only the current entitlement. Full LP history can be attacker-grown
+        // and is unnecessary for an emergency exit.
+        uint256 currentShares = _pool.getCurrentLpShares(_onBehalfOf);
+        require(currentShares <= type(uint128).max, "Shares too large");
+        uint128 shares = uint128(currentShares);
         require(shares > 0, "No shares");
 
         // Withdraw all shares
@@ -122,10 +126,24 @@ contract EmergencyWithdrawal is ReentrancyGuard {
         uint256 amountAfter = token.balanceOf(address(this));
 
         // Calculate the amount of tokens to transfer
+        require(amountAfter >= amountBefore, "Unsupported token behavior.");
         uint256 amount = amountAfter - amountBefore;
 
-        // Transfer the tokens to the user
-        token.safeTransfer(_onBehalfOf, amount);
+        // A zero-liquidity removal has no output and must not invoke an
+        // arbitrary token callback. Any nonzero output is checked exactly on
+        // both sides of the transfer.
+        if (amount > 0) {
+            uint256 escrowBeforeTransfer = amountAfter;
+            uint256 userBefore = token.balanceOf(_onBehalfOf);
+            token.safeTransfer(_onBehalfOf, amount);
+            uint256 escrowAfter = token.balanceOf(address(this));
+            uint256 userAfter = token.balanceOf(_onBehalfOf);
+            require(
+                escrowBeforeTransfer >= escrowAfter && escrowBeforeTransfer - escrowAfter == amount &&
+                    userAfter >= userBefore && userAfter - userBefore == amount,
+                "Unsupported token behavior."
+            );
+        }
 
         emit Withdrawal(_onBehalfOf, address(_pool), msg.sender, token, amount);
     }

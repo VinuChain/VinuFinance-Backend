@@ -1,0 +1,112 @@
+name: Legacy reconciliation
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: legacy-reconciliation
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    name: Read-only mainnet reconciliation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Keep the default public endpoint safe and allow an optional public or
+      # scoped read-only endpoint without introducing a secret or signer.
+      LEGACY_RPC_URL: ${{ vars.VINUFINANCE_LEGACY_READONLY_RPC_URL || 'https://rpc.vinuchain.org' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Reconciler self-check
+        run: node scripts/reconcile-legacy.mjs --self-check
+
+      - name: Reconcile immutable legacy deployment
+        id: reconcile
+        shell: bash
+        run: |
+          set +e
+          node scripts/reconcile-legacy.mjs --json --rpc-url "$LEGACY_RPC_URL" > "$RUNNER_TEMP/legacy-reconciliation.json" 2> "$RUNNER_TEMP/legacy-reconciliation.stderr"
+          exit_code=$?
+          set -e
+
+          REPORT_PATH="$RUNNER_TEMP/legacy-reconciliation.json" SUMMARY_PATH="$GITHUB_STEP_SUMMARY" node --input-type=module - <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+
+          const reportPath = process.env.REPORT_PATH;
+          const summaryPath = process.env.SUMMARY_PATH;
+          let report;
+          try {
+            report = JSON.parse(readFileSync(reportPath, "utf8"));
+          } catch {
+            report = undefined;
+          }
+
+          const value = (item) => String(item ?? "unavailable").replaceAll("|", "\\|").replaceAll("\n", " ");
+          const status = report?.summary?.status ?? "UNAVAILABLE";
+          const block = report?.block?.number ?? "unavailable";
+          const hash = report?.block?.hash ?? "unavailable";
+          const pools = report?.summary?.pools ?? "unavailable";
+          const errors = report?.summary?.errors ?? "unavailable";
+          const warnings = report?.summary?.warnings ?? "unavailable";
+          appendFileSync(summaryPath, [
+            "### Legacy reconciliation",
+            "",
+            "| Field | Value |",
+            "| --- | --- |",
+            `| Status | ${value(status)} |`,
+            `| Block | ${value(block)} |`,
+            `| Hash | \`${value(hash)}\` |`,
+            `| Pools | ${value(pools)} |`,
+            `| Errors | ${value(errors)} |`,
+            `| Warnings | ${value(warnings)} |`,
+            "",
+          ].join("\n"));
+          NODE
+
+          if [ "$exit_code" -eq 0 ] || [ "$exit_code" -eq 2 ]; then
+            echo "Legacy reconciliation completed with exit $exit_code."
+          else
+            echo "::error::Legacy reconciliation failed with exit $exit_code; inspect the JSON and stderr artifacts."
+            exit "$exit_code"
+          fi
+
+      - name: Upload reconciliation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-reconciliation-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/legacy-reconciliation.json
+            ${{ runner.temp }}/legacy-reconciliation.stderr
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload backend revision metadata
+        if: always()
+        shell: bash
+        run: |
+          printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/backend-github-sha.txt"
+
+      - name: Upload backend revision artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-reconciliation-backend-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-github-sha.txt
+          if-no-files-found: error
+          retention-days: 14

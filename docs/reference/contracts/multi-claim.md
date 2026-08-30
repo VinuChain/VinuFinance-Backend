@@ -1,22 +1,22 @@
 # MultiClaim
 
-A helper contract for claiming multiple non-consecutive loans in a single transaction.
+A helper contract for claiming bounded consecutive loan groups in a single transaction.
 
 **Source:** `contracts/MultiClaim.sol`
 
 ## Overview
 
-The BasePool's `claim()` function requires loan indices to be ascending within a single call. MultiClaim allows LPs to claim multiple groups of loans efficiently.
+The BasePool's `claim()` function requires a consecutive settled prefix beginning at the LP's current claim cursor. MultiClaim batches that one global prefix into multiple calls efficiently; it does not support sparse gaps.
 
 ## Use Case
 
-Consider an LP with shares in loans 1-5 and 10-15, but not 6-9:
+Consider an LP with settled loans 1-5 and 6-10:
 
 **Without MultiClaim:**
 ```javascript
 // Two separate transactions
 await pool.claim(lp, [1, 2, 3, 4, 5], false, deadline);
-await pool.claim(lp, [10, 11, 12, 13, 14, 15], false, deadline);
+await pool.claim(lp, [6, 7, 8, 9, 10], false, deadline);
 ```
 
 **With MultiClaim:**
@@ -24,7 +24,7 @@ await pool.claim(lp, [10, 11, 12, 13, 14, 15], false, deadline);
 // Single transaction
 await multiClaim.claimMultiple(
     poolAddress,
-    [[1, 2, 3, 4, 5], [10, 11, 12, 13, 14, 15]],
+    [[1, 2, 3], [4, 5, 6, 7, 8, 9, 10]],
     [false, false],
     deadline
 );
@@ -58,19 +58,20 @@ Claims from multiple groups of loans in a single transaction.
 - `_loanIdxs.length > 0`
 - `_loanIdxs.length == _isReinvested.length`
 - Each sub-array must be non-empty
-- Each sub-array must have ascending loan indices
+- Each sub-array must be non-empty and strictly consecutive
+- The first index of each later group must immediately follow the previous group's last index
 
 **Example:**
 
 ```javascript
 const multiClaim = new ethers.Contract(multiClaimAddress, MultiClaimABI, signer);
 
-// Claim loans 1-5 (reinvest) and 10-15 (withdraw)
+// Claim one global prefix in two consecutive groups (reinvest first, withdraw second)
 await multiClaim.claimMultiple(
     poolAddress,
     [
-        [1, 2, 3, 4, 5],      // First group
-        [10, 11, 12, 13, 14, 15] // Second group
+        [1, 2, 3],             // First group
+        [4, 5, 6, 7, 8, 9, 10]  // Second group
     ],
     [true, false],           // Reinvest first, withdraw second
     Math.floor(Date.now() / 1000) + 3600
@@ -125,7 +126,7 @@ await pool.setApprovals(multiClaimAddress, 10);
 
 ## Gas Considerations
 
-MultiClaim saves gas when claiming non-consecutive loans:
+MultiClaim saves gas when splitting one consecutive claim prefix into groups:
 
 | Scenario | Without MultiClaim | With MultiClaim |
 |----------|-------------------|-----------------|
@@ -145,6 +146,7 @@ Savings increase with:
 | `MultiClaim: Empty loan index array.` | `_loanIdxs` is empty |
 | `MultiClaim: Inconsistent lengths.` | Arrays have different lengths |
 | `MultiClaim: Empty loan index sub-array.` | A sub-array is empty |
+| `MultiClaim: Non-consecutive loan indices.` | A group has a gap from the previous group |
 
 ## Related
 

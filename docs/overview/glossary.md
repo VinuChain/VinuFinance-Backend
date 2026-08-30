@@ -29,8 +29,10 @@ The token type pledged by borrowers as security for loans. If the borrower doesn
 ### Controller
 The governance contract managing proposals, voting, revenue distribution, pool whitelisting, and LP rewards.
 
-### Creator Fee
-A fee (max 3%) deducted from collateral when borrowing. Sent to protocol treasury via the Controller.
+### Protocol Fee (`creatorFee`)
+A fee (max 3%) deducted from collateral when borrowing and deposited in the
+Controller for vote-token snapshot distribution. The identifier is a legacy
+ABI name; the fee is not paid to the pool creator or a treasury.
 
 ## D
 
@@ -98,7 +100,7 @@ The minimum time (120 seconds) between adding and removing liquidity. Prevents f
 The minimum loan duration (86,400 seconds = 1 day).
 
 ### MultiClaim
-A helper contract allowing LPs to claim multiple non-consecutive loans in a single transaction.
+A helper contract allowing LPs to batch one global consecutive loan prefix in a single transaction; sparse gaps are not supported.
 
 ## P
 

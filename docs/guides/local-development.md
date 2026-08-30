@@ -4,7 +4,7 @@ This guide explains how to set up a local development environment for VinuFinanc
 
 ## Prerequisites
 
-- Node.js v16+ and npm
+- Node.js v20+ and Corepack/Yarn 1.22.22
 - Git
 - A code editor (VS Code recommended)
 
@@ -20,7 +20,30 @@ cd VinuFinance-VinuChain
 ### 2. Install Dependencies
 
 ```bash
-npm install
+corepack enable
+yarn install --frozen-lockfile
+```
+
+`package.json#packageManager` pins Yarn 1.22.22. Keep the lockfile frozen in
+local and CI installs so compiler and plugin versions cannot drift.
+
+The Hardhat and Foundry compiler settings are intentionally identical:
+**solc 0.8.36**, **EVM Cancun**, optimizer enabled with **200 runs**, and **Yul
+enabled**, with the metadata bytecode hash disabled for deterministic output.
+Run `yarn verify:compiler` to rebuild both artifacts and compare resolved
+settings and exact init/runtime bytecode for all four deployed contracts.
+
+Run the backend typecheck before tests:
+
+```bash
+yarn typecheck
+```
+
+The Foundry harness uses a pinned forge-std revision:
+
+```bash
+forge install --no-git foundry-rs/forge-std@rev=bf647bd6046f2f7da30d0c2bf435e5c76a780c1b
+yarn test:foundry
 ```
 
 ### 3. Environment Configuration
@@ -30,13 +53,24 @@ Create a `.env` file in the project root:
 ```bash
 # Network RPC URLs
 VINUCHAIN_RPC_URL=https://rpc.vinuchain.org
-TESTNET_RPC_URL=https://vinufoundation-rpc.com
+VINUCHAIN_TESTNET_RPC_URL=https://vinufoundation-rpc.com
 
 # Private key for deployment (without 0x prefix)
 PRIVATE_KEY=your_private_key_here
 
-# Optional: Block explorer API key for verification
-EXPLORER_API_KEY=your_api_key
+# VinuExplorer uses its public Blockscout-compatible API; no API key is needed.
+```
+
+The `vinuchain` Hardhat network is VinuChain mainnet (chain ID `207`). The
+`vinuchainTestnet` network is the VinuChain testnet (chain ID `206`) and uses
+`https://vinufoundation-rpc.com` by default. Its explorer is
+`https://testnet.vinuexplorer.org`. Both networks omit deploy accounts unless
+`PRIVATE_KEY` is set. `scripts/deploy.prod.ts` is deliberately mainnet-only;
+use the local deployment rehearsal for a no-chain-mutation release check:
+
+```bash
+yarn test:deployment
+yarn verify:network
 ```
 
 ## Project Structure
@@ -52,7 +86,7 @@ VinuFinance-VinuChain/
 ├── scripts/               # Deployment scripts
 ├── test/                  # Test files
 ├── docs/                  # Documentation
-├── hardhat.config.js      # Hardhat configuration
+├── hardhat.config.ts      # Hardhat configuration
 └── package.json
 ```
 
@@ -93,7 +127,21 @@ REPORT_GAS=true npx hardhat test
 ### Run with Coverage
 
 ```bash
-npx hardhat coverage
+yarn coverage
+yarn coverage:gate
+```
+
+`yarn coverage:gate` reads `coverage/coverage-final.json` and checks the
+executable timestamp-test wrappers generated as `BasePool_parsed.sol` and
+`Controller_parsed.sol`; the raw source entries are not substituted for those
+wrappers. The gate requires at least 90% statement and line coverage for those
+two core contracts, and at least 85% for `EmergencyWithdrawal` and `MultiClaim`.
+
+Check the deterministic Foundry gas baseline with the same test selection used
+in CI:
+
+```bash
+forge snapshot --check .gas-snapshot --match-path "test/foundry/*.t.sol"
 ```
 
 ## Local Blockchain
@@ -106,12 +154,13 @@ npx hardhat node
 
 This starts a local Ethereum node at `http://127.0.0.1:8545`.
 
-### Deploy to Local Node
+### Run Local Deployment Rehearsal
 
-In a new terminal:
+The release rehearsal uses an ephemeral Hardhat chain and never sends a
+transaction to VinuChain:
 
 ```bash
-npx hardhat run scripts/deploy.js --network localhost
+yarn test:deployment
 ```
 
 ## Hardhat Console
@@ -219,14 +268,15 @@ it("should emit AddLiquidity event", async function () {
 ### Basic Deployment
 
 ```javascript
-// scripts/deploy.js
+// illustrative deployment sequence; use scripts/deploy.prod.ts for production
 const { ethers } = require("hardhat");
 
 async function main() {
     const [deployer] = await ethers.getSigners();
     console.log("Deploying with:", deployer.address);
 
-    // Deploy Controller first (8 parameters)
+    // Controller derives and stores the exact BasePool creation-code hash
+    // internally; do not pass a hash constructor argument.
     const Controller = await ethers.getContractFactory("Controller");
     const controller = await Controller.deploy(
         voteTokenAddress,       // _voteToken
@@ -241,44 +291,57 @@ async function main() {
     await controller.deployed();
     console.log("Controller:", controller.address);
 
-    // Deploy BasePool (11 parameters with arrays)
+    // Create BasePool through Controller (provenance is required for whitelist)
     const BasePool = await ethers.getContractFactory("BasePool");
-    const pool = await BasePool.deploy(
-        [loanTokenAddress, collTokenAddress],  // _tokens array
-        18,                                     // _collTokenDecimals
-        loanTenor,                             // _loanTenor
-        maxLoanPerColl,                        // _maxLoanPerColl
-        [r1, r2],                              // _rs array
-        [liquidityBnd1, liquidityBnd2],        // _liquidityBnds array
-        minLoan,                               // _minLoan
-        creatorFee,                            // _creatorFee
-        minLiquidity,                          // _minLiquidity (new)
-        controller.address,                    // _poolController
-        rewardCoefficient                      // _rewardCoefficient
-    );
-    await pool.deployed();
+    const encodedPool = ethers.utils.defaultAbiCoder.encode([
+        "address[]", "uint256", "uint256", "uint256", "uint256[]", "uint256[]",
+        "uint256", "uint256", "uint256", "address", "uint96",
+    ], [[loanTokenAddress, collTokenAddress], 18, loanTenor, maxLoanPerColl,
+        [r1, r2], [liquidityBnd1, liquidityBnd2], minLoan, creatorFee,
+        minLiquidity, controller.address, rewardCoefficient
+    ]);
+    const poolTx = await controller.createPool(BasePool.bytecode, encodedPool, { gasLimit: 8_000_000 });
+    const poolReceipt = await poolTx.wait();
+    const poolEvent = poolReceipt.events.find((item) => item.event === "PoolCreated");
+    if (!poolEvent) throw new Error("PoolCreated event missing");
+    const pool = BasePool.attach(poolEvent.args.pool);
     console.log("BasePool:", pool.address);
 }
 
 main().catch(console.error);
 ```
 
+`Controller.createPool` accepts only the exact `BasePool` creation code, checks
+the deployed pool's Controller binding, and records the pool in
+`poolRegistered` before governance can whitelist it.
+
 ### Running Deployment
 
 ```bash
-# Local
-npx hardhat run scripts/deploy.js --network localhost
+# Ephemeral local production-equivalent rehearsal (mock tokens only)
+yarn test:deployment
 
-# Testnet
-npx hardhat run scripts/deploy.js --network testnet
+# Testnet network registration/read-only gate (does not deploy)
+yarn verify:network
 
-# Mainnet
-npx hardhat run scripts/deploy.js --network vinuchain
+# Mainnet production deployment (requires the deploy.prod.ts env contract)
+npx hardhat run scripts/deploy.prod.ts --network vinuchain
 ```
 
 ## Contract Verification
 
-After deployment, verify on block explorer:
+After a separately authorized deployment, verify on VinuExplorer's
+Blockscout-compatible API. The Hardhat config registers both chain 207 and
+testnet chain 206 with their documented API and browser URLs;
+the command below submits a verification request, so run it only after
+checking the deployment address and constructor arguments. First validate the
+registration without making a submission:
+
+```bash
+yarn verify:network
+```
+
+Then, for each deployed contract:
 
 ```bash
 npx hardhat verify --network vinuchain CONTRACT_ADDRESS constructor_args...
@@ -327,7 +390,7 @@ npx hardhat compile --force
 ### Update Dependencies
 
 ```bash
-npm update
+yarn install --frozen-lockfile
 ```
 
 ### Check Contract Sizes
@@ -349,7 +412,7 @@ npx hardhat size-contracts
 
 ```json
 {
-    "solidity.compileUsingRemoteVersion": "v0.8.19",
+    "solidity.compileUsingRemoteVersion": "v0.8.36",
     "editor.formatOnSave": true
 }
 ```
@@ -358,7 +421,7 @@ npx hardhat size-contracts
 
 ### "Contract size exceeds limit"
 
-- Enable optimizer in hardhat.config.js
+- Enable optimizer in hardhat.config.ts
 - Split into smaller contracts
 - Remove unnecessary code
 

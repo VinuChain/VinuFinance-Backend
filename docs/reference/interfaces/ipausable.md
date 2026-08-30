@@ -16,14 +16,19 @@ The IPausable interface defines the pause/unpause functionality that allows the 
 function pause() external;
 ```
 
-Pauses the contract, preventing borrowing operations.
+Pauses selected pool operations during an emergency. In `BasePool`, adding
+liquidity, borrowing, and claim reinvestment are paused; exits and repayment
+remain available.
 
 **Access:** Only callable by the Controller contract.
 
 **Effects:**
 - Sets paused state to true
-- `borrow()` function will revert while paused
-- Other functions (addLiquidity, removeLiquidity, repay, claim) remain operational
+- `addLiquidity()` and `borrow()` revert while paused
+- `claim(..., true, ...)` (reinvestment) reverts while paused
+- `removeLiquidity()`, `repay()`, claim-only calls (`claim(..., false, ...)`),
+  `forceRewardUpdate()`, and approved `EmergencyWithdrawal.collectEmergency()`
+  remain operational
 
 ### unpause
 
@@ -40,8 +45,12 @@ Unpauses the contract, resuming normal operations.
 ```solidity
 contract BasePool is IBasePool, Pausable, IPausable {
 
-    function borrow(...) external payable whenNotPaused {
-        // Only works when not paused
+    function addLiquidity(...) external payable whenNotPaused { ... }
+
+    function borrow(...) external payable whenNotPaused { ... }
+
+    function claim(..., bool _isReinvested, ...) external {
+        if (_isReinvested) require(!paused(), "Pausable: paused");
     }
 
     function pause() external override {
@@ -60,11 +69,17 @@ contract BasePool is IBasePool, Pausable, IPausable {
 
 | Function | Available? |
 |----------|------------|
-| `addLiquidity()` | Yes |
+| `addLiquidity()` | **No** |
 | `removeLiquidity()` | Yes |
 | `borrow()` | **No** |
 | `repay()` | Yes |
-| `claim()` | Yes |
+| `claim(..., false, ...)` (claim-only) | Yes |
+| `claim(..., true, ...)` (reinvest) | **No** |
+| `forceRewardUpdate()` | Yes |
+| `EmergencyWithdrawal.collectEmergency()` (approved exit) | Yes* |
+
+\* The emergency helper still requires an approved escrow and removable LP
+shares; it calls `removeLiquidity`, which is not pause-gated.
 
 ## Governance Flow
 
@@ -83,7 +98,8 @@ contract BasePool is IBasePool, Pausable, IPausable {
 │     proposals[idx].target.pause() ──► pool._pause()           │
 │                                                                │
 │  4. Pool is now paused                                         │
-│     borrow() reverts with "Pausable: paused"                   │
+│     addLiquidity(), borrow(), and reinvested claims revert       │
+│     with "Pausable: paused"                                     │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```

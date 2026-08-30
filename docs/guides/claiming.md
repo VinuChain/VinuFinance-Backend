@@ -9,7 +9,8 @@ As an LP, you're entitled to your pro-rata share of:
 1. **Loan Repayments** - Principal + interest from repaid loans
 2. **Defaulted Collateral** - Collateral from loans that weren't repaid
 
-Claims are made on a per-loan basis using loan indices.
+Claims are submitted as a contiguous settled prefix using loan indices, starting
+at the LP's current claim cursor.
 
 ## How Claims Work
 
@@ -54,29 +55,33 @@ Get your LP info to understand claimable loans:
 ) = pool.getLpInfo(myAddress);
 ```
 
-### 2. Find Settled Loans
+### 2. Find the Settled Prefix
 
-Check which loans have settled:
+Starting at `fromLoanIdx`, check loans in order and stop at the first
+unsettled loan. Claims cannot submit settled IDs after an unsettled gap:
 
 ```javascript
 // Get current loan index
 const poolInfo = await pool.getPoolInfo();
 const currentLoanIdx = poolInfo.loanIdx;
 
-// Check each loan's status
+// Find one contiguous settled prefix
 for (let i = lpInfo.fromLoanIdx; i < currentLoanIdx; i++) {
     const loan = await pool.loanIdxToLoanInfo(i);
     const now = Math.floor(Date.now() / 1000);
 
     if (loan.repaid || now > loan.expiry) {
         console.log(`Loan ${i} is settled - claimable!`);
+    } else {
+        break;
     }
 }
 ```
 
 ### 3. Execute Claim
 
-Call the `claim` function:
+Call the `claim` function with the settled prefix beginning at `fromLoanIdx`.
+Do not submit sparse settled IDs after an unsettled loan:
 
 ```solidity
 function claim(
@@ -137,23 +142,23 @@ Set `_isReinvested = true` to automatically reinvest repayments:
 
 ## Batch Claiming with MultiClaim
 
-`BasePool.claim` requires every loan index in a single call to fall within one
-**constant-share interval** — if your LP share balance changed partway through
-(e.g. you added or removed liquidity), a call spanning that change reverts with
-`"Loan indexes with changing shares."`. MultiClaim batches one `claim` per segment
-in a single transaction:
+`BasePool.claim` requires a non-empty, strictly consecutive prefix beginning at
+your current `fromLoanIdx`. A batch may cross share-history changes; the pool
+uses the shares applicable to each loan. MultiClaim splits one such global
+prefix into multiple `claim` calls in a single transaction (for example, to use
+different reinvestment choices per group):
 
 ```solidity
 function claimMultiple(
     IBasePool _pool,
-    uint256[][] calldata _loanIdxs,   // one ascending sub-array per constant-share segment
+    uint256[][] calldata _loanIdxs,   // consecutive sub-arrays forming one global prefix
     bool[] calldata _isReinvested,    // reinvest flag per segment
     uint256 _deadline
 ) external;
 ```
 
 ```javascript
-// e.g. your shares changed after loan 5: claim 1–5, then 6–12, in one tx
+// e.g. claim one global prefix in two groups, in one tx
 await multiClaim.claimMultiple(
     poolAddress,
     [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10, 11, 12]],
@@ -162,12 +167,12 @@ await multiClaim.claimMultiple(
 );
 ```
 
-> **Cursor warning — don't skip loans you're entitled to.** Each `claim` advances your
-> `fromLoanIdx` cursor to the highest submitted index + 1. If you leave a gap over loans
-> you still hold shares in (e.g. they haven't settled yet), the cursor moves past them and
-> they become **permanently unclaimable** (a later claim reverts `"Unentitled from loan
-> indices."`). Gaps are only safe across spans where you held **no** shares — the pool
-> skips those automatically.
+> **Cursor rule — claim only the settled prefix.** Each successful `claim` must start at
+> the current `fromLoanIdx`, contain strictly consecutive indices, and stop before the
+> first unsettled loan. A sparse list, a list that starts later, or a list that crosses
+> an unsettled loan reverts atomically; the cursor and claim ledger do not advance.
+> After a successful prefix, the pool automatically skips intervals where you held no
+> shares before exposing the next cursor.
 
 First approve MultiClaim on the pool for CLAIM (and ADD_LIQUIDITY if reinvesting):
 `pool.setApprovals(multiClaimAddress, 10)` (CLAIM=8 + ADD_LIQUIDITY=2).
@@ -298,9 +303,8 @@ const now = Math.floor(Date.now() / 1000);
 
 for (let i = fromLoanIdx; i < currentLoanIdx; i++) {
     const loan = await pool.loanIdxToLoanInfo(i);
-    if (loan.repaid || now > loan.expiry) {
-        claimableLoans.push(i);
-    }
+    if (loan.repaid || now > loan.expiry) claimableLoans.push(i);
+    else break; // claims must stop at the first unsettled loan
 }
 
 console.log(`Found ${claimableLoans.length} claimable loans`);

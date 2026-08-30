@@ -4,8 +4,15 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./interfaces/IController.sol";
+import "./BasePool.sol";
+
+interface IBasePoolControllerBinding {
+    function poolController() external view returns (IController);
+}
 
 contract Controller is IController, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -18,6 +25,9 @@ contract Controller is IController, ReentrancyGuard {
 
     // Reward base value
     uint256 constant REWARD_BASE = 10 ** 18;
+
+    // Maximum number of snapshots that may be claimed atomically.
+    uint256 public constant MAX_CLAIM_BATCH = 50;
 
     // Token to be used for voting
     IERC20 public voteToken;
@@ -79,8 +89,31 @@ contract Controller is IController, ReentrancyGuard {
     // Whether a pool is whitelisted
     mapping(address => bool) public poolWhitelisted;
 
+    // Future-generation pools must be constructed by this Controller before
+    // governance can whitelist them. Runtime bytecode and a self-reported
+    // controller are not construction provenance: a same-runtime contract can
+    // preload those storage slots during custom initialization.
+    mapping(address => bool) public poolRegistered;
+
+    event PoolCreated(address indexed pool, address indexed creator);
+
     // Holder of the veto power for whitelisting proposals
     address public vetoHolder;
+
+    // Creation code expected by createPool. Deriving this from the imported
+    // source makes the trust root the audited build rather than deployer input.
+    bytes32 public immutable basePoolCreationCodeHash;
+
+    // Cumulative vote weight already allocated for each token snapshot. The
+    // zero address entry is the aggregate cursor; voter entries retain their
+    // own weight without shifting the existing snapshot mappings.
+    mapping(IERC20 => mapping(uint256 => mapping(address => uint256)))
+        public claimedVoteWeight;
+
+    // Every veto-holder transfer invalidates approvals from the preceding
+    // epoch, including an A -> B -> A transfer sequence.
+    uint256 public vetoEpoch;
+    mapping(uint256 => uint256) public vetoApprovalEpoch;
 
     /**
      * @notice Instantiates the Controller contract
@@ -104,11 +137,23 @@ contract Controller is IController, ReentrancyGuard {
         uint256 _lockPeriod,
         address _vetoHolder
     ) {
+        require(address(_voteToken) != address(0), "Invalid vote token.");
+        require(address(_voteToken).code.length > 0, "Vote token must be a contract.");
+        uint8 voteDecimals;
+        try IERC20Metadata(address(_voteToken)).decimals() returns (uint8 value) {
+            voteDecimals = value;
+        } catch {
+            revert("Vote token decimals unavailable.");
+        }
+        require(voteDecimals == 18, "Vote token must use 18 decimals.");
         require(_pauseThreshold > 0 && _pauseThreshold <= THRESHOLD_BASE, "_pauseThreshold must be in (0, THRESHOLD_BASE].");
         require(_unpauseThreshold > 0 && _unpauseThreshold <= THRESHOLD_BASE, "_unpauseThreshold must be in (0, THRESHOLD_BASE].");
         require(_whitelistThreshold > 0 && _whitelistThreshold <= THRESHOLD_BASE, "_whitelistThreshold must be in (0, THRESHOLD_BASE].");
         require(_dewhitelistThreshold > 0 && _dewhitelistThreshold <= THRESHOLD_BASE, "_dewhitelistThreshold must be in (0, THRESHOLD_BASE].");
         require(_snapshotEvery > 0, "_snapshotEvery must be greater than 0.");
+        require(_snapshotEvery <= type(uint256).max - type(uint32).max, "Snapshot period too large.");
+        require(_lockPeriod <= type(uint256).max - type(uint32).max, "Lock period too large.");
+        require(_vetoHolder != address(0), "Invalid veto holder.");
 
         voteToken = _voteToken;
 
@@ -120,6 +165,8 @@ contract Controller is IController, ReentrancyGuard {
         snapshotTokenEvery = _snapshotEvery;
         lockPeriod = _lockPeriod;
         vetoHolder = _vetoHolder;
+        vetoEpoch = 1;
+        basePoolCreationCodeHash = keccak256(type(BasePool).creationCode);
     }
 
     function supportsInterface(bytes4 interfaceId) override external view returns (bool) {
@@ -129,14 +176,42 @@ contract Controller is IController, ReentrancyGuard {
     }
 
     /**
+     * @notice Constructs a canonical BasePool with this Controller as its binding.
+     * @dev The caller supplies the canonical BasePool creation code and ABI-
+     *      encoded constructor arguments. The code hash check prevents custom
+     *      init code from being admitted, while the registry entry is written
+     *      only after the constructor returns and post-deployment checks pass.
+     * @param _creationCode Exact BasePool creation bytecode, without arguments.
+     * @param _encodedParams ABI-encoded BasePool constructor arguments.
+     */
+    function createPool(bytes calldata _creationCode, bytes calldata _encodedParams)
+        external
+        nonReentrant
+        returns (address pool)
+    {
+        require(keccak256(_creationCode) == basePoolCreationCodeHash, "Invalid pool creation code.");
+        bytes memory initCode = bytes.concat(_creationCode, _encodedParams);
+        assembly {
+            pool := create(0, add(initCode, 0x20), mload(initCode))
+        }
+        require(pool != address(0), "Pool creation failed.");
+        require(pool.code.length > 0, "Pool creation failed.");
+        require(
+            address(IBasePoolControllerBinding(pool).poolController()) == address(this),
+            "Invalid pool controller."
+        );
+        poolRegistered[pool] = true;
+        emit PoolCreated(pool, msg.sender);
+    }
+
+    /**
      * @inheritdoc IController
      */
     function depositRevenue(IERC20 _token, uint256 _amount) external payable override nonReentrant {
-        uint256 balanceBefore = _token.balanceOf(address(this));
-        _token.safeTransferFrom(msg.sender, address(this), _amount);
-        uint256 received = _token.balanceOf(address(this)) - balanceBefore;
+        require(msg.value == 0, "Native value unsupported.");
+        _transferFromExact(_token, msg.sender, _amount);
 
-        currentRevenue[_token] += received;
+        currentRevenue[_token] += _amount;
         _checkTokenSnapshot(_token);
     }
 
@@ -268,14 +343,27 @@ contract Controller is IController, ReentrancyGuard {
             revert("Unsupported action type.");
         }
 
-        uint256 absoluteThreshold = voteTokenTotalSupply * referenceThreshold / THRESHOLD_BASE;
-        if (proposals[_proposalIdx].totalVotes > absoluteThreshold) {
+        // Ceiling semantics make `>=` exact while ensuring any nonzero
+        // percentage threshold still requires at least one vote.
+        uint256 absoluteThreshold = Math.mulDiv(
+            voteTokenTotalSupply,
+            referenceThreshold,
+            THRESHOLD_BASE,
+            Math.Rounding.Up
+        );
+        if (proposals[_proposalIdx].totalVotes >= absoluteThreshold) {
             if(
                 proposals[_proposalIdx].action == Action.WHITELIST &&
-                proposals[_proposalIdx].vetoApprover != vetoHolder
+                (vetoHolder != address(0) &&
+                    (proposals[_proposalIdx].vetoApprover != vetoHolder ||
+                        vetoApprovalEpoch[_proposalIdx] != vetoEpoch))
             ) {
                 // Proposal hasn't been approved by the veto holder yet
                 return;
+            }
+
+            if (proposals[_proposalIdx].action == Action.WHITELIST) {
+                _validateWhitelistTarget(proposals[_proposalIdx].target);
             }
 
             // Proposal passed
@@ -295,6 +383,16 @@ contract Controller is IController, ReentrancyGuard {
 
             emit Executed(_proposalIdx, proposals[_proposalIdx].totalVotes, voteTokenTotalSupply);
         }
+    }
+
+    function _validateWhitelistTarget(IPausable _target) internal view {
+        address target = address(_target);
+        require(target.code.length > 0, "Invalid pool target.");
+        require(poolRegistered[target], "Pool not created by Controller.");
+        require(
+            address(IBasePoolControllerBinding(target).poolController()) == address(this),
+            "Invalid pool controller."
+        );
     }
 
     /**
@@ -320,9 +418,9 @@ contract Controller is IController, ReentrancyGuard {
      * @param _amount Amount to deposit
      */
     function depositVoteToken(uint256 _amount) external payable nonReentrant {
+        require(msg.value == 0, "Native value unsupported.");
+        _transferFromExact(voteToken, msg.sender, _amount);
         _depositVoteToken(msg.sender, _amount);
-
-        voteToken.safeTransferFrom(msg.sender, address(this), _amount);
     }
 
     /**
@@ -337,7 +435,8 @@ contract Controller is IController, ReentrancyGuard {
 
         require(
             lastDepositTimestamp[msg.sender] == 0 ||
-            block.timestamp >= lastDepositTimestamp[msg.sender] + lockPeriod,
+            (block.timestamp >= lastDepositTimestamp[msg.sender] &&
+                block.timestamp - lastDepositTimestamp[msg.sender] >= lockPeriod),
         "Too early to withdraw.");
         
         voteTokenBalance[msg.sender] -= _amount;
@@ -345,7 +444,7 @@ contract Controller is IController, ReentrancyGuard {
 
         uint256 subTimestamp = _takeAccountSnapshot(msg.sender);
 
-        voteToken.safeTransfer(msg.sender, _amount);
+        _transferExact(voteToken, msg.sender, _amount);
 
         emit WithdrawnVoteToken(msg.sender, _amount, voteTokenBalance[msg.sender], voteTokenTotalSupply, subTimestamp);
     }
@@ -371,8 +470,9 @@ contract Controller is IController, ReentrancyGuard {
     function _checkTokenSnapshot (IERC20 _token) internal {
         uint256 newSnapshotIdx = numTokenSnapshots[_token];
         if (newSnapshotIdx == 0 || // First snapshot
-            // Enough time has passed
-            block.timestamp >= tokenSnapshots[_token][newSnapshotIdx - 1].timestamp + snapshotTokenEvery
+            // Enough time has passed, without an overflowing addition
+            block.timestamp >= tokenSnapshots[_token][newSnapshotIdx - 1].timestamp &&
+            block.timestamp - tokenSnapshots[_token][newSnapshotIdx - 1].timestamp >= snapshotTokenEvery
         ) {
             if (voteTokenTotalSupply == 0) {
                 subTimestampCounter[block.timestamp]++;
@@ -505,6 +605,10 @@ contract Controller is IController, ReentrancyGuard {
      * @param _accountSnapshotIdx Index of the account snapshot
      */
     function claimToken(IERC20 _token, uint256 _tokenSnapshotIdx, uint256 _accountSnapshotIdx) public nonReentrant {
+        _claimToken(_token, _tokenSnapshotIdx, _accountSnapshotIdx);
+    }
+
+    function _claimToken(IERC20 _token, uint256 _tokenSnapshotIdx, uint256 _accountSnapshotIdx) internal {
         require(_accountSnapshotIdx < numAccountSnapshots[msg.sender], "Invalid account snapshot idx.");
         require(_tokenSnapshotIdx < numTokenSnapshots[_token], "Invalid token snapshot idx.");
 
@@ -535,19 +639,43 @@ contract Controller is IController, ReentrancyGuard {
 
         require(tokenSnapshots[_token][_tokenSnapshotIdx].voteTokenTotalSupply > 0, "No vote tokens during snapshot.");
 
-        uint256 remainingRevenue = tokenSnapshots[_token][_tokenSnapshotIdx].collectedRevenue - tokenSnapshots[_token][_tokenSnapshotIdx].claimedRevenue;
-        uint256 transferAmount = tokenSnapshots[_token][_tokenSnapshotIdx].collectedRevenue * accountSnapshots[msg.sender][_accountSnapshotIdx].voteTokenBalance / tokenSnapshots[_token][_tokenSnapshotIdx].voteTokenTotalSupply;
-        
-        if (transferAmount > remainingRevenue) {
-            // Rounding errors can cause underflows, adjust the amount
+        TokenSnapshot storage tokenSnapshot = tokenSnapshots[_token][_tokenSnapshotIdx];
+        uint256 totalVoteWeight = tokenSnapshot.voteTokenTotalSupply;
+        uint256 accountVoteWeight = accountSnapshots[msg.sender][_accountSnapshotIdx].voteTokenBalance;
+        uint256 previousClaimedWeight = claimedVoteWeight[_token][_tokenSnapshotIdx][address(0)];
+        require(previousClaimedWeight <= totalVoteWeight, "Claimed votes exceed total.");
+        require(
+            accountVoteWeight <= totalVoteWeight - previousClaimedWeight,
+            "Claimed votes exceed total."
+        );
+        uint256 nextClaimedWeight = previousClaimedWeight + accountVoteWeight;
+
+        uint256 transferAmount = Math.mulDiv(
+                tokenSnapshot.collectedRevenue,
+                nextClaimedWeight,
+                totalVoteWeight
+            ) -
+            Math.mulDiv(
+                tokenSnapshot.collectedRevenue,
+                previousClaimedWeight,
+                totalVoteWeight
+            );
+        uint256 remainingRevenue = tokenSnapshot.collectedRevenue - tokenSnapshot.claimedRevenue;
+        if (nextClaimedWeight == totalVoteWeight) {
+            transferAmount = remainingRevenue;
+        } else if (transferAmount > remainingRevenue) {
             transferAmount = remainingRevenue;
         }
 
-        tokenSnapshots[_token][_tokenSnapshotIdx].claimed[msg.sender] = true;
-        tokenSnapshots[_token][_tokenSnapshotIdx].claimedRevenue += transferAmount;
-        _token.safeTransfer(msg.sender, transferAmount);
+        tokenSnapshot.claimed[msg.sender] = true;
+        tokenSnapshot.claimedRevenue += transferAmount;
+        claimedVoteWeight[_token][_tokenSnapshotIdx][address(0)] = nextClaimedWeight;
+        claimedVoteWeight[_token][_tokenSnapshotIdx][msg.sender] = accountVoteWeight;
+        if (transferAmount > 0) {
+            _transferExact(_token, msg.sender, transferAmount);
+        }
 
-        emit TokenClaimed(_token, msg.sender, _tokenSnapshotIdx, _accountSnapshotIdx, transferAmount, tokenSnapshots[_token][_tokenSnapshotIdx].claimedRevenue);
+        emit TokenClaimed(_token, msg.sender, _tokenSnapshotIdx, _accountSnapshotIdx, transferAmount, tokenSnapshot.claimedRevenue);
     }
 
     /**
@@ -559,13 +687,14 @@ contract Controller is IController, ReentrancyGuard {
      * @param _tokenSnapshotIdxs Indexes of the token snapshots
      * @param _accountSnapshotIdxs Indexes of the account snapshots
      */
-    function claimMultiple(IERC20[] memory _tokens, uint256[] memory _tokenSnapshotIdxs, uint256[] memory _accountSnapshotIdxs) external {
+    function claimMultiple(IERC20[] calldata _tokens, uint256[] calldata _tokenSnapshotIdxs, uint256[] calldata _accountSnapshotIdxs) external nonReentrant {
         require(_tokens.length == _tokenSnapshotIdxs.length, "_tokens and _tokenSnapshotIdxs must have the same length.");
         require(_tokens.length == _accountSnapshotIdxs.length, "_tokens and _accountSnapshotIdxs must have the same length.");
         require(_tokens.length > 0, "Arrays must have at least one element.");
+        require(_tokens.length <= MAX_CLAIM_BATCH, "Claim batch too large.");
 
         for (uint256 i = 0; i < _tokens.length; i++) {
-            claimToken(_tokens[i], _tokenSnapshotIdxs[i], _accountSnapshotIdxs[i]);
+            _claimToken(_tokens[i], _tokenSnapshotIdxs[i], _accountSnapshotIdxs[i]);
         }
     }
 
@@ -573,34 +702,58 @@ contract Controller is IController, ReentrancyGuard {
      * @notice Deposits the tokens that will be used as reward
      */
     function depositRewardSupply(uint256 _amount) payable external nonReentrant {
+        require(msg.value == 0, "Native value unsupported.");
+        _transferFromExact(voteToken, msg.sender, _amount);
         rewardSupply += _amount;
-
-        voteToken.safeTransferFrom(msg.sender, address(this), _amount);
     }
 
     /**
      * @inheritdoc IController
      */
-    function requestTokenDistribution(address _account, uint128 _liquidity, uint32 _duration, uint96 _rewardCoefficient) external override {
+    function requestTokenDistribution(address _account, uint128 _liquidity, uint32 _duration, uint96 _rewardCoefficient)
+        external
+        override
+        nonReentrant
+        returns (uint256 amount)
+    {
         // This flag allows simulating a function call failure in the contract due to out-of-quota
         // TMP-MAYBE-DISABLE
         
         require(poolWhitelisted[msg.sender], "Pool is not whitelisted.");
 
-        uint256 amount = uint256(_liquidity) * uint256(_duration) * uint256(_rewardCoefficient) / REWARD_BASE;
+        amount = Math.mulDiv(
+            uint256(_liquidity),
+            uint256(_duration) * uint256(_rewardCoefficient),
+            REWARD_BASE
+        );
 
         // If the funds left are less than what is requested, distribute the ones we have, but don't revert
         if (amount > rewardSupply) {
             amount = rewardSupply;
         }
 
-        unchecked {
-            rewardSupply -= amount;
-        }
-
+        rewardSupply -= amount;
         rewardBalance[_account] += amount;
 
         emit Reward(_account, _liquidity, _duration, _rewardCoefficient, amount);
+    }
+
+    /**
+     * @notice Credits a bounded amount of a pool's outstanding reward debt.
+     * @dev Returning the actual amount lets BasePool retain any unfunded
+     *      remainder and retry it later without blocking exits.
+     */
+    function requestTokenDistributionExact(address _account, uint256 _amount)
+        external
+        override
+        nonReentrant
+        returns (uint256 amount)
+    {
+        require(poolWhitelisted[msg.sender], "Pool is not whitelisted.");
+        amount = _amount > rewardSupply ? rewardSupply : _amount;
+        rewardSupply -= amount;
+        rewardBalance[_account] += amount;
+        emit Reward(_account, 0, 0, 0, amount);
     }
 
     // This flag adds methods to enable/disable function call failure due to out-of-quota
@@ -621,7 +774,7 @@ contract Controller is IController, ReentrancyGuard {
         if (_deposit) {
             _depositVoteToken(msg.sender, amount);
         } else {
-            voteToken.safeTransfer(msg.sender, amount);
+            _transferExact(voteToken, msg.sender, amount);
         }
     }
 
@@ -644,8 +797,10 @@ contract Controller is IController, ReentrancyGuard {
 
         if (_approve) {
             proposals[_proposalIdx].vetoApprover = vetoHolder;
+            vetoApprovalEpoch[_proposalIdx] = vetoEpoch;
         } else {
             proposals[_proposalIdx].vetoApprover = address(0);
+            vetoApprovalEpoch[_proposalIdx] = 0;
         }
 
         emit VetoHolderApproval(_proposalIdx, _approve);
@@ -672,8 +827,35 @@ contract Controller is IController, ReentrancyGuard {
         address oldHolder = vetoHolder;
 
         vetoHolder = _newHolder;
+        vetoEpoch++;
 
         emit VetoPowerTransfer(oldHolder, _newHolder);
+    }
+
+    function _transferFromExact(IERC20 _token, address _from, uint256 _amount) internal {
+        uint256 fromBefore = _token.balanceOf(_from);
+        uint256 controllerBefore = _token.balanceOf(address(this));
+        _token.safeTransferFrom(_from, address(this), _amount);
+        uint256 fromAfter = _token.balanceOf(_from);
+        uint256 controllerAfter = _token.balanceOf(address(this));
+        require(
+            fromBefore >= fromAfter && fromBefore - fromAfter == _amount &&
+                controllerAfter >= controllerBefore && controllerAfter - controllerBefore == _amount,
+            "Unsupported token behavior."
+        );
+    }
+
+    function _transferExact(IERC20 _token, address _to, uint256 _amount) internal {
+        uint256 controllerBefore = _token.balanceOf(address(this));
+        uint256 recipientBefore = _token.balanceOf(_to);
+        _token.safeTransfer(_to, _amount);
+        uint256 controllerAfter = _token.balanceOf(address(this));
+        uint256 recipientAfter = _token.balanceOf(_to);
+        require(
+            controllerBefore >= controllerAfter && controllerBefore - controllerAfter == _amount &&
+                recipientAfter >= recipientBefore && recipientAfter - recipientBefore == _amount,
+            "Unsupported token behavior."
+        );
     }
 
     // The following is an instruction for the custom preprocessor implemented in unit tests

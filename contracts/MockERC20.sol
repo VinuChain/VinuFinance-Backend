@@ -19,6 +19,34 @@ contract MockERC20 is ERC20 {
     }
 }
 
+contract MockZeroDecimalERC20 is ERC20 {
+    constructor() ERC20("MockZeroDecimalERC20", "M0ERC") {}
+
+    function decimals() public pure override returns (uint8) {
+        return 0;
+    }
+
+    function mint(uint256 amount) external {
+        _mint(msg.sender, amount);
+    }
+}
+
+contract MockDecimalsERC20 is ERC20 {
+    uint8 private immutable tokenDecimals;
+
+    constructor(uint8 decimals_) ERC20("MockDecimalsERC20", "MDEC") {
+        tokenDecimals = decimals_;
+    }
+
+    function decimals() public view override returns (uint8) {
+        return tokenDecimals;
+    }
+
+    function mint(uint256 amount) external {
+        _mint(msg.sender, amount);
+    }
+}
+
 contract FeeOnTransferMockERC20 is ERC20 {
     uint256 public constant FEE_BPS = 1000;
     uint256 public constant BPS_BASE = 10000;

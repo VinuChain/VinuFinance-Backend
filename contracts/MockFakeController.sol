@@ -19,10 +19,19 @@ contract MockFakeController is IController {
             interfaceId == type(IController).interfaceId;
     }
 
+    function poolWhitelisted(address) external pure returns (bool) {
+        return true;
+    }
+
     function depositRevenue(IERC20 _token, uint256 _amount) override external payable {
         revert();
     }
-    function requestTokenDistribution(address _account, uint128 _liquidity, uint32 _duration, uint96 _rewardCoefficient) override external {
+    function requestTokenDistribution(address _account, uint128 _liquidity, uint32 _duration, uint96 _rewardCoefficient) override external returns (uint256) {
+        _account; _liquidity; _duration; _rewardCoefficient;
+        revert();
+    }
+    function requestTokenDistributionExact(address _account, uint256 _amount) override external returns (uint256) {
+        _account; _amount;
         revert();
     }
 }

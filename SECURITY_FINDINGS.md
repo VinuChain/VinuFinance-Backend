@@ -5,6 +5,10 @@ bookkeeping added to `BasePool`, and writes down the invariant the subsystem is
 *supposed* to satisfy (audit findings S1 and A3).
 
 Source audit: `reports/vinuchain-audit-2026-06-10/05-VinuFinance-Backend.md`.
+Compiler and toolchain versions mentioned in the historical reproduction below
+describe the original audit environment; the current reproducible build is
+solc 0.8.36 with Cancun, optimizer runs 200, and Yul enabled in both Hardhat
+and Foundry.
 
 > **STATUS: S1 FIXED.** The saturating-subtraction remediation (audit task P2) has
 > been applied to the two reward-tracker decrements in `BasePool` (`removeLiquidity`
@@ -103,7 +107,7 @@ _updateRewardAndSend(_onBehalfOf, _satSub(lastTrackedLiquidity[_onBehalfOf], liq
 
 (The helper form was chosen over an inline ternary because an inline ternary at the
 `claim` site introduced an extra stack slot that tripped `Stack too deep` under the
-project's non-via-IR Solc 0.8.19 profile. The helper consumes no caller stack slot.)
+project's historical non-via-IR Solc 0.8.19 profile. The helper consumes no caller stack slot.)
 
 **Flooring at zero does NOT enable over-crediting.** The reward actually sent is
 computed on the *old* tracker value (captured as `oldLiquidity` in `_updateReward`
@@ -134,13 +138,18 @@ flipped from proving-the-bug to proving-the-fix.
 
 | File | Purpose |
 |---|---|
-| `foundry.toml` | Foundry profile for the security harness (Hardhat remains the canonical toolchain) |
+| `foundry.toml` | Foundry profile for the security harness (Hardhat remains the canonical toolchain; compiler settings mirror Hardhat) |
 | `test/foundry/mocks/MockRewardController.sol` | Minimal `IController` stub mirroring the reward distribution arithmetic |
 | `test/foundry/RewardInvariant.handler.sol` | Stateful fuzz handler (add/remove/borrow/repay/claim/reinvest/warp) with precise underflow attribution |
 | `test/foundry/RewardInvariant.t.sol` | Invariants: S1 (now LIVE + green post-fix), claim-side guard, reward conservation (P4), over-crediting bound (P4), deterministic replay |
 | `test/foundry/RewardUnderflowRepro.t.sol` | Minimal deterministic repro — now asserts the LP CAN withdraw (proves the fix) |
 
-Run: `npm run test:foundry` (after `forge install --no-git foundry-rs/forge-std`).
+Install the pinned forge-std revision and run the harness:
+
+```bash
+forge install --no-git foundry-rs/forge-std@rev=bf647bd6046f2f7da30d0c2bf435e5c76a780c1b
+yarn test:foundry
+```
 
 ## Non-zero reward coefficient (audit finding T1)
 
