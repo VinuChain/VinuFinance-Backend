@@ -32,6 +32,7 @@ import { ethers } from "hardhat"
 
 // VinuChain mainnet chain id; this script refuses to run anywhere else.
 const VINUCHAIN_CHAIN_ID = 207
+const MAX_TIMESTAMP = 0xffffffff
 
 // 10**18, used for BASE-denominated rate/fee/reward params.
 const MONE = BigNumber.from("1000000000000000000")
@@ -238,8 +239,18 @@ async function main() {
     if (LOAN_TENOR < 86400) {
         throw new Error(`LOAN_TENOR (${LOAN_TENOR}) must be >= 86400 (MIN_TENOR; BasePool.sol:130).`)
     }
-    if (LOAN_TENOR > 0xffffffff) {
+    if (LOAN_TENOR > MAX_TIMESTAMP) {
         throw new Error(`LOAN_TENOR (${LOAN_TENOR}) must fit the uint32 expiry ceiling (BasePool.sol:130).`)
+    }
+    const latestBlock = await ethers.provider.getBlock("latest")
+    if (!latestBlock) {
+        throw new Error("Unable to read the latest block timestamp for BasePool expiry validation.")
+    }
+    if (LOAN_TENOR > MAX_TIMESTAMP - latestBlock.timestamp) {
+        throw new Error(
+            `LOAN_TENOR (${LOAN_TENOR}) plus current block.timestamp (${latestBlock.timestamp}) ` +
+                `must fit the uint32 expiry ceiling (BasePool.sol:134).`,
+        )
     }
     // _maxLoanPerColl > 0 (BasePool.sol:131).
     if (BigNumber.from(MAX_LOAN_PER_COLL).lte(0)) {

@@ -628,6 +628,35 @@ contract FundSafetyTest is Test {
         pool.borrow(BORROWER, 1_000, 0, type(uint128).max, block.timestamp, 0);
     }
 
+    function test_constructorRejectsTenorPastDeploymentExpiryCeiling() public {
+        SafetyToken loan = new SafetyToken("Loan", "LOAN");
+        ZeroDecimalSafetyToken collateral = new ZeroDecimalSafetyToken("Collateral", "COLL");
+        MockRewardController controller = new MockRewardController();
+
+        vm.warp(2_000_000_000);
+        uint256 boundaryTenor = uint256(type(uint32).max) - block.timestamp;
+        BasePool pool = _poolWith(
+            IERC20(address(loan)),
+            IERC20(address(collateral)),
+            IController(address(controller)),
+            0,
+            boundaryTenor,
+            MIN_LOAN
+        );
+        (, , , , uint256 actualTenor, , , , ) = pool.getPoolInfo();
+        assertEq(actualTenor, boundaryTenor, "maximum deployment-safe tenor must be accepted");
+
+        vm.expectRevert(bytes("Loan tenor too large."));
+        _poolWith(
+            IERC20(address(loan)),
+            IERC20(address(collateral)),
+            IController(address(controller)),
+            0,
+            boundaryTenor + 1,
+            MIN_LOAN
+        );
+    }
+
     function test_extremeRateTermsFailBoundedlyWithoutArithmeticPanic() public {
         SafetyToken loan = new SafetyToken("Loan", "LOAN");
         ZeroDecimalSafetyToken collateral = new ZeroDecimalSafetyToken("Collateral", "COLL");

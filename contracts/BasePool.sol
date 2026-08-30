@@ -159,6 +159,10 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         require(_collTokenDecimals <= MAX_TOKEN_DECIMALS, "Invalid collateral decimals.");
         require(_loanTenor >= MIN_TENOR, "Loan tenor must be at least MIN_TENOR.");
         require(_loanTenor <= MAX_TIMESTAMP, "Loan tenor too large.");
+        // `_borrow` stores expiry in uint32 and applies the same ceiling to the
+        // current timestamp. Reject an immutable pool that could never issue a
+        // loan at deployment time.
+        require(block.timestamp <= MAX_TIMESTAMP - _loanTenor, "Loan tenor too large.");
         require(_maxLoanPerColl > 0, "Max loan must not be 0.");
         require(
             _maxLoanPerColl <= type(uint256).max / (2 * uint256(type(uint128).max)),
