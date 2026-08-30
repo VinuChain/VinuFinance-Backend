@@ -114,6 +114,10 @@ constructor(
 )
 ```
 
+`_creatorFee` retains its legacy ABI name but is protocol revenue: each borrow
+deducts it from collateral and the pool deposits it to the Controller. It is
+not paid to the pool creator.
+
 ### Parameter Calculation
 
 See [Creating Pools](creating-pools.md) for detailed parameter calculation.

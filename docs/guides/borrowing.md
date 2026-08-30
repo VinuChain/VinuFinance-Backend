@@ -64,6 +64,10 @@ Before borrowing, query the terms you'll receive:
 ) = pool.loanTerms(collateralAmount);
 ```
 
+Despite the legacy `creatorFee` ABI name, this is protocol revenue: it is
+deducted from the pledged collateral and deposited to the pool's Controller.
+It is not paid to the pool creator.
+
 **Example in JavaScript:**
 ```javascript
 // Check terms for 100 WVC collateral
