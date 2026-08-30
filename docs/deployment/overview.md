@@ -107,7 +107,7 @@ constructor(
     uint256[] memory _rs,           // [r1, r2] interest rates (in BASE)
     uint256[] memory _liquidityBnds,// [liquidityBnd1, liquidityBnd2]
     uint256 _minLoan,               // Minimum loan amount
-    uint256 _creatorFee,            // Pool creator fee (max 3%)
+    uint256 _creatorFee,            // Legacy ABI name: protocol fee (max 3%)
     uint256 _minLiquidity,          // Minimum liquidity (at least 1000)
     IController _poolController,    // Controller address
     uint96 _rewardCoefficient       // LP reward coefficient
@@ -136,12 +136,17 @@ const pool = await BasePool.deploy(
         ethers.utils.parseUnits("100000", 6)  // 100k USDT bnd2
     ],
     ethers.utils.parseUnits("100", 6),    // 100 USDT min loan
-    ethers.utils.parseUnits("0.01", 18),  // 1% creator fee
+    ethers.utils.parseUnits("0.01", 18),  // 1% protocol fee (legacy _creatorFee)
     ethers.utils.parseUnits("1000", 6),   // 1000 USDT min liquidity
     controllerAddress,
     ethers.utils.parseUnits("1", 18)      // Reward coefficient
 );
 ```
+
+`_creatorFee` is the legacy ABI/config identifier for the protocol fee. It is
+deducted from collateral and deposited as Controller protocol revenue for
+vote-token snapshot distribution; it is not paid to the pool creator or a
+treasury.
 
 ## Helper Contract Deployment
 
@@ -182,23 +187,12 @@ await emergency.deployed();
 
 ### Verify on Block Explorer
 
-```bash
-# Controller
-npx hardhat verify --network vinuchain \
-    CONTROLLER_ADDRESS \
-    "VOTE_TOKEN_ADDRESS" \
-    "VETO_HOLDER_ADDRESS"
-
-# BasePool
-npx hardhat verify --network vinuchain \
-    POOL_ADDRESS \
-    "LOAN_TOKEN" "COLL_TOKEN" \
-    "LOAN_TENOR" "MAX_LOAN_PER_COLL" \
-    "R1" "R2" \
-    "LIQUIDITY_BND1" "LIQUIDITY_BND2" \
-    "MIN_LOAN" "CREATOR_FEE" \
-    "CONTROLLER" "REWARD_COEFF"
-```
+Submit the exact deployment-era standard JSON compiler input and constructor
+arguments to the explorer. Do not use this generic guide’s illustrative values
+or the current checkout to verify an immutable legacy address; use
+[`legacy-vinuchain.md`](legacy-vinuchain.md) for that release record. The
+original legacy artifact and metadata remain an external prerequisite for any
+pool source verification.
 
 ### Manual Verification
 

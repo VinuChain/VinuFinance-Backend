@@ -171,64 +171,18 @@ npx hardhat run scripts/deploy-vinuchain.js --network vinuchain
 
 ## Contract Verification
 
-### Using Hardhat
+### Verification
 
-For contracts with array parameters, create a constructor arguments file:
-
-**1. Controller Verification**
-
-```bash
-# Controller has 8 parameters (no arrays)
-npx hardhat verify --network vinuchain \
-    CONTROLLER_ADDRESS \
-    "VINU_ADDRESS" \
-    5000 \
-    5000 \
-    5000 \
-    5000 \
-    86400 \
-    604800 \
-    "VETO_HOLDER_ADDRESS"
-```
-
-**2. BasePool Verification**
-
-Since BasePool uses array parameters, create a file `arguments.js`:
-
-```javascript
-// arguments.js
-module.exports = [
-    ["USDT_ADDRESS", "WVC_ADDRESS"],           // _tokens array
-    18,                                         // _collTokenDecimals
-    2592000,                                   // _loanTenor
-    "500000000000000000",                      // _maxLoanPerColl
-    ["150000000000000000", "20000000000000000"], // _rs array [r1, r2] = [15%, 2%] (r1 > r2)
-    ["10000000000", "100000000000"],           // _liquidityBnds array
-    "100000000",                               // _minLoan
-    "10000000000000000",                       // _creatorFee
-    "1000000000",                              // _minLiquidity
-    "CONTROLLER_ADDRESS",                      // _poolController
-    "1000000000000000000"                      // _rewardCoefficient
-];
-```
-
-Then verify:
-
-```bash
-npx hardhat verify --network vinuchain \
-    --constructor-args arguments.js \
-    POOL_ADDRESS
-```
-
-### Manual Verification
-
-If automatic verification fails:
-
-1. Go to VinuChain Explorer
-2. Navigate to contract address
-3. Click "Verify Contract"
-4. Select "Solidity (Standard JSON-Input)"
-5. Upload build artifacts from `artifacts/build-info/`
+Verification is a release-recording step, not proof that the current checkout
+matches an existing mainnet address. For the immutable `legacy-mainnet-v1`
+generation, use [`legacy-vinuchain.md`](legacy-vinuchain.md): its deployment-era
+source is Vita-Inu commit `142a918c0be2f4107d28e24da37ed019ad3558ed` with
+Solidity `0.8.21`, OpenZeppelin `4.8.2`, optimizer runs `200`, and Yul enabled.
+The original artifact and metadata are unavailable, so the ten legacy pools
+must remain unverified. Only the original operator, with the original
+standard-JSON compiler input and constructor arguments, can submit a valid
+explorer verification request. Do not submit the current checkout’s artifacts
+or copied illustrative values for those addresses.
 
 ## Gas Costs on VinuChain
 
@@ -338,14 +292,11 @@ those are the manual steps below.
 ### Post-Deploy Steps
 
 1. **Record** `deployments/vinuchain.json` (commit it, archive it, share addresses).
-2. **Verify each contract** on the explorer:
-   ```bash
-   npx hardhat verify --network vinuchain <CONTROLLER_ADDR> <controller ctor args...>
-   npx hardhat verify --network vinuchain --constructor-args arguments.js <POOL_ADDR>
-   npx hardhat verify --network vinuchain <MULTICLAIM_ADDR>
-   npx hardhat verify --network vinuchain <EMERGENCY_WITHDRAWAL_ADDR>
-   ```
-   (See "Contract Verification" above for the BasePool `arguments.js` format.)
+2. **Verify each new contract** on the explorer using the exact deployment-era
+   standard JSON compiler input and constructor arguments recorded with the
+   release. For immutable `legacy-mainnet-v1` addresses, stop and follow
+   [`legacy-vinuchain.md`](legacy-vinuchain.md); the current checkout and its
+   illustrative artifacts are not valid proof for that generation.
 3. **Update [vinuchain-lists](https://github.com/VinuChain/vinuchain-lists) and the
    frontend config** with the new contract addresses.
 4. **Transfer the Controller veto holder to the multisig** if it was bootstrapped

@@ -25,9 +25,27 @@ node scripts/reconcile-legacy.mjs --json
 node scripts/reconcile-legacy.mjs --json --block 14707477
 ```
 
+When no block is supplied it resolves the head once, then pins every code,
+contract, balance, loan, and event read to that block tag. The report includes
+the block number, hash, timestamp, ten-pool `NewSubPool` inventory, and creator
+fee values.
+
 The historical form requires an archive-capable RPC. A pruned endpoint may
 return `missing trie node`; that is an unavailable historical read, not proof
 that the state changed.
+
+## Verification provenance
+
+The current checkout is **not** bytecode-equivalent to the immutable legacy
+BasePool deployment. Do not run a generic or current-checkout Hardhat
+verification command against these mainnet addresses. The strongest
+deployment-era source-generation match is Vita-Inu commit
+`142a918c0be2f4107d28e24da37ed019ad3558ed`, with Solidity `0.8.21`, OpenZeppelin
+`4.8.2`, optimizer runs `200`, Yul enabled, and the deployment-era bytecode
+target. The original artifact, exact compiler input, and metadata JSON are not
+available; the ten pools therefore remain unverified. Verification is possible
+only after the original operator supplies that artifact/metadata bundle and
+the explorer accepts its standard JSON input and constructor arguments.
 
 ## Core contracts and helpers
 
@@ -39,24 +57,16 @@ that the state changed.
 
 The Controller constructor is eight arguments, in this exact order:
 
-```bash
-npx hardhat verify --network vinuchain \
-  0x17bA239f2815BA01152522521737275a2439216f \
-  0xed8c5530a0A086a12f57275728128a60DFf04230 \
-  2000 3000 6000 4000 100 10 \
-  0xe56e67774d965c10193375fd953d2e1e2f802d16
+```text
+voteToken, pauseThreshold, unpauseThreshold, whitelistThreshold,
+dewhitelistThreshold, snapshotTokenEvery, lockPeriod, vetoHolder
 ```
 
 The vote token is WVC. The effective veto holder and original pool deployer
 are `0xe56e67774d965c10193375fd953d2e1e2f802d16`. MultiClaim and
-EmergencyWithdrawal have no constructor arguments:
-
-```bash
-npx hardhat verify --network vinuchain \
-  0xA260d19aEe266cC85F41f160271F9C72ea8E2837
-npx hardhat verify --network vinuchain \
-  0xeBC1C9Ae7FC761330929d682d97334513C1FcB4b
-```
+EmergencyWithdrawal have no constructor arguments. Their explorer statuses
+are recorded above; do not infer source equivalence for the legacy pools from
+those helper statuses.
 
 ## Tokens
 
@@ -68,7 +78,8 @@ npx hardhat verify --network vinuchain \
 
 ## Pool constructor verification
 
-Every pool uses the current `BasePool` constructor with eleven arguments:
+Every pool exposes the deployed legacy `BasePool` constructor ABI with eleven
+arguments; this does not assert that the current checkout is equivalent:
 
 ```text
 [_loanToken, _collateralToken], _collTokenDecimals, _loanTenor,
@@ -97,8 +108,10 @@ arguments:
 | VINU/WVC 2 | `0xfE3BcC21F7a48F23C149a0730DA275f42dc8b1e0` | `[VINU, WVC]` | 18 | `795225546426911000000000` |
 | WVC/VINU 2 | `0x0e603483590134f31a67A9D43e7d04193E80e482` | `[WVC, VINU]` | 18 | `201000000000` |
 
-For a pool, write a temporary constructor-arguments file from the manifest;
-never hand-copy the generic example's decimals or loan units:
+For a pool, the deployment owner must reconstruct the original constructor
+arguments from this manifest and the original artifact; never hand-copy the
+generic guide's decimals or loan units. The following is a documentation-only
+shape, not a verification command for the current checkout:
 
 ```javascript
 module.exports = [
@@ -116,13 +129,8 @@ module.exports = [
 ];
 ```
 
-Then run:
-
-```bash
-npx hardhat verify --network vinuchain \
-  --constructor-args arguments.js POOL_ADDRESS
-```
-
-All ten BasePool addresses were unverified at the observation. Do not record a
-pool as source-verified until the explorer reports full verification and the
-verified compiler settings and constructor arguments match the manifest.
+Submit the original deployment-era standard JSON compiler input and these
+constructor values to the explorer’s verification workflow. All ten BasePool
+addresses were unverified at the observation. Do not record a pool as
+source-verified until the explorer reports full verification and the verified
+compiler settings and constructor arguments match the manifest.

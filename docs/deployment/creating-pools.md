@@ -122,9 +122,12 @@ const liquidityBnd2 = ethers.utils.parseUnits("100000", 6); // 100k USDT
 
 | Parameter | Type | Description | Max |
 |-----------|------|-------------|-----|
-| `creatorFee` | uint256 | Fee to pool creator | 3% (MAX_FEE) |
+| `creatorFee` | uint256 | Protocol fee (legacy ABI/config name) | 3% (MAX_FEE) |
 
-The creator fee is taken from each loan as a percentage.
+`creatorFee` is taken from each loan’s collateral as a percentage and deposited
+as Controller protocol revenue for vote-token snapshot distribution. Despite
+the legacy name, it is not paid to the pool creator or a treasury; use
+“protocol fee” in user-facing copy.
 
 ### Liquidity Parameters
 
@@ -136,7 +139,7 @@ The minimum liquidity ensures LP shares can be minted based on 1/1000th discreti
 
 **Example:**
 ```javascript
-// 1% creator fee
+// 1% protocol fee (legacy creatorFee identifier)
 const creatorFee = BASE.mul(1).div(100);
 ```
 
@@ -185,7 +188,7 @@ const config = {
     ],
 
     // Fees and liquidity
-    creatorFee: ethers.utils.parseUnits("0.01", 18),  // 1%
+    creatorFee: ethers.utils.parseUnits("0.01", 18),  // 1% protocol fee
     minLiquidity: ethers.utils.parseUnits("1000", 6), // 1000 USDT min
 
     // Governance
@@ -236,7 +239,7 @@ Low risk, lower returns:
     liquidityBnd1: 100000,       // 100k
     liquidityBnd2: 500000,       // 500k
     minLoan: 1000,               // 1000 USDT
-    creatorFee: 0.005            // 0.5%
+    creatorFee: 0.005            // 0.5% protocol fee
 }
 ```
 
@@ -253,7 +256,7 @@ Balanced risk/reward:
     liquidityBnd1: 10000,        // 10k
     liquidityBnd2: 100000,       // 100k
     minLoan: 100,                // 100 USDT
-    creatorFee: 0.01             // 1%
+    creatorFee: 0.01             // 1% protocol fee
 }
 ```
 
@@ -270,7 +273,7 @@ Higher risk, higher returns:
     liquidityBnd1: 5000,         // 5k
     liquidityBnd2: 25000,        // 25k
     minLoan: 50,                 // 50 USDT
-    creatorFee: 0.02             // 2%
+    creatorFee: 0.02             // 2% protocol fee
 }
 ```
 

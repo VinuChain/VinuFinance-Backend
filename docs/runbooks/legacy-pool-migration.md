@@ -9,8 +9,16 @@ node scripts/reconcile-legacy.mjs --json
 ```
 
 It performs only `eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`,
-`eth_getCode`, and read-only `eth_call` requests. It has no signer, private-key,
+`eth_getCode`, bounded `eth_getLogs`, and read-only `eth_call` requests. It has no signer, private-key,
 token-transfer, governance, pause, or deployment capability.
+
+The report is not a complete claims or rewards ledger. It scans bounded loan
+state, reports current Controller revenue/balances, and bounds aggregate
+collateral and repayment reserves when the loan scan is complete. It does not
+replay historical `Claim`, `Reward`, `Reinvest`, or `TokenClaimed` events and
+does not reconstruct per-LP claimable balances or reward liabilities. Use an
+independent archive/event reconciliation before declaring claims, rewards, or
+LP liabilities settled.
 
 ## Known legacy hazards
 
@@ -99,8 +107,13 @@ minutes) from an isolated read-only worker. Alert on:
   loan scan cap exhaustion;
 - loan-token balance below `totalLiquidity`;
 - changes to outstanding/repaid/expired loan counts, committed principal,
-  settled repayments, default collateral, or claimable residuals;
-- controller revenue/balance changes, reward events, or non-zero coefficients;
+  settled repayments, default collateral, active/expired collateral, remaining
+  default collateral, or claimed default collateral;
+- controller revenue/balance changes or non-zero reward coefficients. This
+  report does not establish historical reward-event totals or claimable
+  residuals; monitor those with the independent event/LP-liability process
+  described above. Also alert on repayment reserve or claimed/reinvested
+  repayment changes;
 - any USDT decimal mismatch beyond the two explicitly recorded legacy pools;
 - frontend generation/address/ABI hash not matching the release registry.
 

@@ -19,6 +19,12 @@ const { utils: ethersUtils } = require("ethers");
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_MANIFEST = resolve(SCRIPT_DIR, "../deployments/vinuchain-legacy.json");
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
+const EVENT_CHUNK_SIZE = 100_000;
+const MAX_EVENT_CHUNKS = 1_000;
+const NEW_SUB_POOL_INTERFACE = new ethersUtils.Interface([
+  "event NewSubPool(address loanCcyToken,address collCcyToken,uint256 loanTenor,uint256 maxLoanPerColl,uint256 r1,uint256 r2,uint256 liquidityBnd1,uint256 liquidityBnd2,uint256 minLoan,uint256 creatorFee,address poolController,uint96 rewardCoefficient)",
+]);
+const NEW_SUB_POOL_TOPIC = NEW_SUB_POOL_INTERFACE.getEventTopic("NewSubPool");
 
 function keccak256(input) {
   return ethersUtils.keccak256(input);
@@ -223,6 +229,103 @@ async function readRuntime(rpc, item, scope, tag, findings) {
   return actual;
 }
 
+function textValue(value) {
+  return typeof value === "string" ? value : value.toString();
+}
+
+async function readNewSubPoolEvents(rpc, manifest, toBlockHex, findings) {
+  const fromBlock = BigInt(manifest.network.eventScanStartBlock);
+  const toBlock = BigInt(toBlockHex);
+  if (fromBlock > toBlock) {
+    addFinding(findings, "error", "EVENT_SCAN_RANGE_INVALID", "events.range", `<= ${toBlock}`, fromBlock);
+    return { fromBlock: Number(fromBlock), toBlock: Number(toBlock), chunkSize: EVENT_CHUNK_SIZE, chunks: 0, records: [] };
+  }
+
+  const logs = [];
+  let chunks = 0;
+  for (let start = fromBlock; start <= toBlock; start += BigInt(EVENT_CHUNK_SIZE)) {
+    chunks += 1;
+    if (chunks > MAX_EVENT_CHUNKS) {
+      addFinding(findings, "error", "EVENT_SCAN_CAP_EXCEEDED", "events.chunks", `<= ${MAX_EVENT_CHUNKS}`, chunks);
+      break;
+    }
+    const end = start + BigInt(EVENT_CHUNK_SIZE - 1) < toBlock ? start + BigInt(EVENT_CHUNK_SIZE - 1) : toBlock;
+    const result = await rpc.request("eth_getLogs", [{
+      fromBlock: blockTag(start.toString()),
+      toBlock: blockTag(end.toString()),
+      topics: [NEW_SUB_POOL_TOPIC],
+    }]);
+    if (!Array.isArray(result)) throw new Error("eth_getLogs returned a non-array result");
+    logs.push(...result);
+  }
+
+  const expected = new Map(manifest.pools.map((pool) => [pool.address.toLowerCase(), pool]));
+  const controllerAddress = manifest.contracts.controller.address;
+  const seen = new Map();
+  const records = [];
+  for (const log of logs) {
+    let parsed;
+    try {
+      parsed = NEW_SUB_POOL_INTERFACE.parseLog({ topics: log.topics, data: log.data });
+    } catch (error) {
+      addFinding(findings, "error", "EVENT_DECODE_FAILED", "events.log", "NewSubPool ABI", error.message);
+      continue;
+    }
+    const args = parsed.args;
+    const event = {
+      pool: String(log.address).toLowerCase(),
+      block: Number(BigInt(log.blockNumber)),
+      transactionHash: String(log.transactionHash).toLowerCase(),
+      loanToken: String(args.loanCcyToken).toLowerCase(),
+      collateralToken: String(args.collCcyToken).toLowerCase(),
+      loanTenor: textValue(args.loanTenor),
+      maxLoanPerColl: textValue(args.maxLoanPerColl),
+      r1: textValue(args.r1),
+      r2: textValue(args.r2),
+      liquidityBnd1: textValue(args.liquidityBnd1),
+      liquidityBnd2: textValue(args.liquidityBnd2),
+      minLoan: textValue(args.minLoan),
+      creatorFee: textValue(args.creatorFee),
+      poolController: String(args.poolController).toLowerCase(),
+      rewardCoefficient: textValue(args.rewardCoefficient),
+    };
+    if (!sameAddress(event.poolController, controllerAddress)) continue;
+    const address = event.pool;
+    const pool = expected.get(address);
+    if (!pool) {
+      addFinding(findings, "error", "UNEXPECTED_NEW_SUBPOOL", `events.${address}`, "manifest pool", event.pool);
+      records.push(event);
+      continue;
+    }
+    const count = (seen.get(address) ?? 0) + 1;
+    seen.set(address, count);
+    if (count > 1) addFinding(findings, "error", "DUPLICATE_NEW_SUBPOOL", `events.${pool.id}`, 1, count);
+
+    compare(findings, `${pool.id}.event.block`, pool.creationBlock, event.block, "NEW_SUBPOOL_MISMATCH");
+    compare(findings, `${pool.id}.event.transactionHash`, pool.creationTxHash.toLowerCase(), event.transactionHash, "NEW_SUBPOOL_MISMATCH");
+    compare(findings, `${pool.id}.event.loanToken`, manifest.tokens[pool.loanToken].address, event.loanToken, "NEW_SUBPOOL_MISMATCH");
+    compare(findings, `${pool.id}.event.collateralToken`, manifest.tokens[pool.collateralToken].address, event.collateralToken, "NEW_SUBPOOL_MISMATCH");
+    for (const key of ["loanTenor", "maxLoanPerColl", "r1", "r2", "liquidityBnd1", "liquidityBnd2", "minLoan", "creatorFee", "rewardCoefficient"]) {
+      compare(findings, `${pool.id}.event.${key}`, pool.config[key], event[key], "NEW_SUBPOOL_MISMATCH");
+    }
+    compare(findings, `${pool.id}.event.poolController`, controllerAddress, event.poolController, "NEW_SUBPOOL_MISMATCH");
+    records.push(event);
+  }
+
+  if (records.length !== manifest.pools.length) addFinding(findings, "error", "NEW_SUBPOOL_INVENTORY_MISMATCH", "events.count", manifest.pools.length, records.length);
+  for (const pool of manifest.pools) {
+    if (!seen.has(pool.address.toLowerCase())) addFinding(findings, "error", "MISSING_NEW_SUBPOOL", `events.${pool.id}`, "one event", 0);
+  }
+  return {
+    fromBlock: Number(fromBlock),
+    toBlock: Number(toBlock),
+    chunkSize: EVENT_CHUNK_SIZE,
+    chunks,
+    topic: NEW_SUB_POOL_TOPIC,
+    records,
+  };
+}
+
 async function readPool(rpc, pool, manifest, tag, blockTimestamp, maxLoans, findings) {
   const [poolInfoData, rateData, minLiquidity, collateralDecimals, paused, loanCode] = await Promise.all([
     readCall(rpc, pool.address, "getPoolInfo()", [], tag),
@@ -264,12 +367,21 @@ async function readPool(rpc, pool, manifest, tag, blockTimestamp, maxLoans, find
   const whitelisted = await readBool(rpc, expectedController, "poolWhitelisted(address)", [{ type: "address", value: pool.address }], tag);
   if (!whitelisted) addFinding(findings, "error", "POOL_NOT_WHITELISTED", `${pool.id}.poolWhitelisted`, true, false);
 
-  const loanBalance = await readUint(rpc, expectedLoan, "balanceOf(address)", [{ type: "address", value: pool.address }], tag);
-  const collateralBalance = await readUint(rpc, expectedCollateral, "balanceOf(address)", [{ type: "address", value: pool.address }], tag);
-  const tokenDecimals = manifest.tokens[pool.collateralToken].decimals;
-  if (Number(collateralDecimals) !== tokenDecimals) {
+  const actualLoanToken = Object.values(manifest.tokens).find((token) => sameAddress(token.address, poolInfo.loanToken));
+  const actualCollateralToken = Object.values(manifest.tokens).find((token) => sameAddress(token.address, poolInfo.collateralToken));
+  if (!actualLoanToken) addFinding(findings, "error", "UNKNOWN_LOAN_TOKEN", `${pool.id}.loanToken`, "manifest token", poolInfo.loanToken);
+  if (!actualCollateralToken) addFinding(findings, "error", "UNKNOWN_COLLATERAL_TOKEN", `${pool.id}.collateralToken`, "manifest token", poolInfo.collateralToken);
+  const loanBalance = await readUint(rpc, poolInfo.loanToken, "balanceOf(address)", [{ type: "address", value: pool.address }], tag);
+  const collateralBalance = await readUint(rpc, poolInfo.collateralToken, "balanceOf(address)", [{ type: "address", value: pool.address }], tag);
+  const tokenDecimals = actualCollateralToken?.decimals;
+  if (tokenDecimals !== undefined && Number(collateralDecimals) !== tokenDecimals) {
     addFinding(findings, "warning", "DECLARED_COLLATERAL_DECIMALS_MISMATCH", `${pool.id}.collateralDecimals`, tokenDecimals, Number(collateralDecimals));
   }
+  const runtimeBytes = hexBytes(loanCode).length;
+  const runtimeKeccak = keccak256(hexBytes(loanCode));
+  if (loanCode === "0x") addFinding(findings, "error", "MISSING_CODE", `${pool.id}.bytecode`, "deployed bytecode", "0x");
+  compare(findings, `${pool.id}.runtimeBytes`, pool.runtimeBytes, runtimeBytes);
+  compare(findings, `${pool.id}.runtimeKeccak`, pool.runtimeKeccak.toLowerCase(), runtimeKeccak);
   const loanCount = poolInfo.nextLoanIdx > 0n ? poolInfo.nextLoanIdx - 1n : 0n;
   if (loanCount > BigInt(maxLoans)) {
     addFinding(findings, "error", "LOAN_SCAN_CAP_EXCEEDED", `${pool.id}.loanCount`, `<= ${maxLoans}`, loanCount);
@@ -287,9 +399,7 @@ async function readPool(rpc, pool, manifest, tag, blockTimestamp, maxLoans, find
       expiry: Number(decodeWord(data, 4)),
       repaid: decodeBool(data, 5),
     };
-    if (loan.repaid || BigInt(loan.expiry) <= blockTimestamp) {
-      loan.borrower = await readAddress(rpc, pool.address, "loanIdxToBorrower(uint256)", [{ type: "uint256", value: index }], tag);
-    }
+    loan.borrower = await readAddress(rpc, pool.address, "loanIdxToBorrower(uint256)", [{ type: "uint256", value: index }], tag);
     loans.push(loan);
   }
   const outstanding = loans.filter((loan) => !loan.repaid);
@@ -298,8 +408,21 @@ async function readPool(rpc, pool, manifest, tag, blockTimestamp, maxLoans, find
   const committedLoanAmount = outstanding.reduce((sum, loan) => sum + BigInt(loan.loanAmount), 0n);
   const settledRepayments = repaid.reduce((sum, loan) => sum + BigInt(loan.repayment), 0n);
   const defaultedCollateral = expiredUnrepaid.reduce((sum, loan) => sum + BigInt(loan.collateral), 0n);
+  const activeUnrepaid = outstanding.filter((loan) => BigInt(loan.expiry) >= blockTimestamp);
+  const activeCollateral = activeUnrepaid.reduce((sum, loan) => sum + BigInt(loan.collateral), 0n);
+  const expiredCollateral = defaultedCollateral;
   const loanBalanceMinusAvailable = loanBalance - poolInfo.totalLiquidity;
-  if (loanBalance < poolInfo.totalLiquidity) addFinding(findings, "error", "AVAILABLE_LIQUIDITY_UNFUNDED", `${pool.id}.loanBalance`, `>= ${poolInfo.totalLiquidity}`, loanBalance);
+  const scanComplete = loanCount <= BigInt(maxLoans);
+  const remainingDefaultCollateral = collateralBalance - activeCollateral;
+  const claimedDefaultCollateral = expiredCollateral - remainingDefaultCollateral;
+  const remainingRepaymentReserve = loanBalanceMinusAvailable;
+  const claimedOrReinvestedRepayments = settledRepayments - remainingRepaymentReserve;
+  if (scanComplete) {
+    if (collateralBalance < activeCollateral) addFinding(findings, "error", "ACTIVE_COLLATERAL_UNFUNDED", `${pool.id}.collateralBalance`, `>= ${activeCollateral}`, collateralBalance);
+    if (collateralBalance > activeCollateral + expiredCollateral) addFinding(findings, "error", "COLLATERAL_BALANCE_EXCEEDS_LOAN_STATE", `${pool.id}.collateralBalance`, `<= ${activeCollateral + expiredCollateral}`, collateralBalance);
+    if (loanBalanceMinusAvailable < 0n) addFinding(findings, "error", "AVAILABLE_LIQUIDITY_UNFUNDED", `${pool.id}.loanBalance`, `>= ${poolInfo.totalLiquidity}`, loanBalance);
+    if (loanBalanceMinusAvailable > settledRepayments) addFinding(findings, "error", "REPAYMENT_RESERVE_EXCEEDS_SETTLEMENTS", `${pool.id}.loanBalanceMinusAvailable`, `<= ${settledRepayments}`, loanBalanceMinusAvailable);
+  }
   if (tag === `0x${BigInt(manifest.network.observedBlock).toString(16)}` && pool.stateAtObservation) {
     for (const key of ["totalLiquidity", "loanTokenBalance", "totalLpShares", "nextLoanIdx"]) {
       const actual = key === "loanTokenBalance" ? loanBalance : poolInfo[key];
@@ -309,10 +432,19 @@ async function readPool(rpc, pool, manifest, tag, blockTimestamp, maxLoans, find
   return {
     id: pool.id,
     address: pool.address,
-    runtimeBytes: hexBytes(loanCode).length,
-    runtimeKeccak: keccak256(hexBytes(loanCode)),
+    runtimeBytes,
+    runtimeKeccak,
     config: { ...poolInfo, ...rate, minLiquidity, collateralDecimals, poolController: actualController, whitelisted, paused },
-    balances: { loanToken: loanBalance.toString(), collateralToken: collateralBalance.toString(), totalLiquidity: poolInfo.totalLiquidity.toString(), loanBalanceMinusAvailable: loanBalanceMinusAvailable.toString() },
+    balances: { loanTokenAddress: poolInfo.loanToken, collateralTokenAddress: poolInfo.collateralToken, loanToken: loanBalance.toString(), collateralToken: collateralBalance.toString(), totalLiquidity: poolInfo.totalLiquidity.toString(), loanBalanceMinusAvailable: loanBalanceMinusAvailable.toString() },
+    settlement: {
+      activeCollateral: activeCollateral.toString(),
+      expiredCollateral: expiredCollateral.toString(),
+      remainingDefaultCollateral: remainingDefaultCollateral.toString(),
+      claimedDefaultCollateral: claimedDefaultCollateral.toString(),
+      remainingRepaymentReserve: remainingRepaymentReserve.toString(),
+      claimedOrReinvestedRepayments: claimedOrReinvestedRepayments.toString(),
+      scanComplete,
+    },
     loans: {
       scanned: loans.length,
       outstanding: outstanding.length,
@@ -353,7 +485,7 @@ Options:
 Exit codes: 0 healthy, 2 reconciled but degraded by known legacy risks, 1 RPC or accounting mismatch.`);
 }
 
-export { keccak256, loadManifest, validateManifest, resolveReadTag };
+export { NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, keccak256, loadManifest, readNewSubPoolEvents, resolveReadTag, validateManifest };
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
@@ -366,17 +498,19 @@ export async function main(argv = process.argv.slice(2)) {
     if (keccak256(Buffer.alloc(0)) !== "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470") throw new Error("Keccak self-check failed");
     const poolHashes = new Set(manifest.pools.map((pool) => pool.runtimeKeccak.toLowerCase()));
     if (poolHashes.size !== 1) throw new Error("Pool runtime hashes are not uniform in the manifest");
+    if (manifest.network.observedBlock !== 14707477) throw new Error("Manifest observation block changed without evidence");
     if (manifest.network.observedBlockTimestamp !== 1788069122) throw new Error("Manifest observation timestamp changed without evidence");
     for (const fork of ["Shanghai", "Cancun", "Prague", "VinuLatestEVM"]) {
-      if (manifest.network.forkRulesAtObservation?.[fork] !== true) throw new Error(`Manifest fork rule ${fork} is not pinned true`);
+      if (manifest.network.forkRulesAtLatest?.[fork] !== true) throw new Error(`Manifest fork rule ${fork} is not pinned true`);
     }
     const usdtPools = manifest.pools.filter((pool) => pool.collateralToken === "usdt");
     if (usdtPools.length !== 6) throw new Error("Manifest must identify six USDT-collateral pools");
     if (usdtPools.filter((pool) => pool.declaredCollateralDecimals !== manifest.tokens[pool.collateralToken].decimals).length !== 2) throw new Error("Manifest must identify two declared/token decimal mismatches");
     if (manifest.pools.some((pool) => pool.sourceVerification !== "NONE")) throw new Error("Legacy pool source verification must not be claimed");
-    const result = { status: "PASS", manifest: args.manifest, pools: manifest.pools.length, keccak: "PASS" };
+    if (manifest.network.eventScanStartBlock !== 100000) throw new Error("Manifest eventScanStartBlock must remain 100000");
+    const result = { status: "PASS", manifest: args.manifest, observedBlock: manifest.network.observedBlock, observedBlockTimestamp: manifest.network.observedBlockTimestamp, pools: manifest.pools.length, usdtPools: usdtPools.length, decimalMismatches: 2, sourceVerification: "NONE_FOR_POOLS", keccak: "PASS" };
     if (args.json) console.log(jsonStringify(result));
-    else console.log(`Legacy reconciliation self-check passed (${manifest.pools.length} pools; Keccak-256 verified).`);
+    else console.log(`Legacy reconciliation self-check passed (${manifest.pools.length} pools; ${usdtPools.length} USDT pools; 2 declared/token decimal mismatches; Keccak-256 verified).`);
     return 0;
   }
 
@@ -428,6 +562,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const pools = [];
   for (const pool of manifest.pools) pools.push(await readPool(rpc, pool, manifest, callTag, blockTimestamp, maxLoans, findings));
+  const events = await readNewSubPoolEvents(rpc, manifest, blockNumberHex, findings);
   const knownRiskCodes = new Set(findings.filter((finding) => finding.severity === "warning").map((finding) => finding.code));
   const errors = findings.filter((finding) => finding.severity === "error").length;
   const warnings = findings.filter((finding) => finding.severity === "warning").length;
@@ -440,6 +575,7 @@ export async function main(argv = process.argv.slice(2)) {
     tokens,
     controller: controllerState,
     pools,
+    events,
     findings,
     knownRisks: manifest.knownRisks,
     summary: { status, pools: pools.length, errors, warnings, knownRiskCodes: [...knownRiskCodes] },

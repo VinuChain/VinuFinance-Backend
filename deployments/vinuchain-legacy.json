@@ -12,7 +12,7 @@
     "observedBlockTimestamp": 1788069122,
     "eventScanStartBlock": 100000,
     "generation": "legacy-mainnet-v1",
-    "forkRulesAtObservation": {
+    "forkRulesAtLatest": {
       "query": "vc_getRules latest",
       "Shanghai": true,
       "Cancun": true,
