@@ -32,7 +32,8 @@ function assert(condition, message) {
 }
 
 function readJson(file) {
-  return JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
+  const resolved = path.isAbsolute(file) ? file : path.join(root, file);
+  return JSON.parse(fs.readFileSync(resolved, "utf8"));
 }
 
 function readTomlValue(source, key) {
@@ -98,16 +99,36 @@ assert(readTomlBoolean(foundryToml, "optimizer"), "foundry.toml optimizer must b
 assert(readTomlNumber(foundryToml, "optimizer_runs") === expected.optimizerRuns, "foundry.toml optimizer_runs does not match");
 assert(/optimizer_details\s*=\s*\{[^}]*\byul\s*=\s*true\b[^}]*\}/s.test(foundryToml), "foundry.toml optimizer_details.yul must be true");
 
-const contracts = ["BasePool", "Controller"];
+const forgeConfigFile = process.argv[2] || process.env.FOUNDRY_CONFIG_JSON;
+assert(forgeConfigFile, "pass the output of `forge config --json` as the first argument");
+let forgeConfig;
+try {
+  forgeConfig = readJson(forgeConfigFile);
+} catch (error) {
+  fail(`could not read resolved forge config ${forgeConfigFile}: ${error.message}`);
+}
+assert(forgeConfig.solc === expected.solc, `resolved Foundry solc does not match ${expected.solc}`);
+assert(forgeConfig.evm_version === expected.evmVersion, `resolved Foundry evm_version does not match ${expected.evmVersion}`);
+assert(forgeConfig.optimizer === expected.optimizer, "resolved Foundry optimizer must be enabled");
+assert(forgeConfig.optimizer_runs === expected.optimizerRuns, "resolved Foundry optimizer_runs does not match");
+assert(forgeConfig.optimizer_details && forgeConfig.optimizer_details.yul === expected.yul, "resolved Foundry optimizer_details.yul must be true");
+
+const contracts = ["BasePool", "Controller", "MultiClaim", "EmergencyWithdrawal"];
 const comparisons = [];
 for (const name of contracts) {
   const hardhat = readJson(path.join("artifacts", "contracts", `${name}.sol`, `${name}.json`));
   const foundry = readJson(path.join("out", `${name}.sol`, `${name}.json`));
+  const hardhatInit = stripMetadata(hardhat.bytecode);
+  const foundryInit = stripMetadata(foundry.bytecode.object);
   const hardhatRuntime = stripMetadata(hardhat.deployedBytecode);
   const foundryRuntime = stripMetadata(foundry.deployedBytecode.object);
+  assert(hardhatInit.equals(foundryInit), `${name}: metadata-stripped init bytecode differs`);
   assert(hardhatRuntime.equals(foundryRuntime), `${name}: metadata-stripped deployed runtime bytecode differs`);
   comparisons.push({
     contract: name,
+    initBytes: hardhatInit.length,
+    hardhatInitSha256: shortHash(hardhatInit),
+    foundryInitSha256: shortHash(foundryInit),
     runtimeBytes: hardhatRuntime.length,
     hardhatSha256: shortHash(hardhatRuntime),
     foundrySha256: shortHash(foundryRuntime),
@@ -118,7 +139,13 @@ console.log(JSON.stringify({
   pass: true,
   settings: {
     hardhat: expected,
-    foundry: expected,
+    foundry: {
+      solc: forgeConfig.solc,
+      evmVersion: forgeConfig.evm_version,
+      optimizer: forgeConfig.optimizer,
+      optimizerRuns: forgeConfig.optimizer_runs,
+      yul: forgeConfig.optimizer_details.yul,
+    },
   },
   deployedRuntime: comparisons,
 }, null, 2));

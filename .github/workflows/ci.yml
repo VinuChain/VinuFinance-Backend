@@ -67,7 +67,7 @@ jobs:
         run: yarn install --frozen-lockfile
 
       - name: Install forge-std
-        run: forge install --no-git foundry-rs/forge-std
+        run: forge install --no-git foundry-rs/forge-std@rev=bf647bd6046f2f7da30d0c2bf435e5c76a780c1b
 
       - name: Run reward invariant / property tests
         run: forge test --match-path "test/foundry/*.t.sol" -vv

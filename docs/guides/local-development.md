@@ -4,7 +4,7 @@ This guide explains how to set up a local development environment for VinuFinanc
 
 ## Prerequisites
 
-- Node.js v16+ and npm
+- Node.js v20+ and npm
 - Git
 - A code editor (VS Code recommended)
 

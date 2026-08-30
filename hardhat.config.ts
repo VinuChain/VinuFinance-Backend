@@ -3,7 +3,12 @@ require("@nomiclabs/hardhat-ethers")
 require('solidity-docgen');
 import { HardhatUserConfig } from "hardhat/config";
 import "@nomiclabs/hardhat-ethers"
-import "@nomicfoundation/hardhat-toolbox";
+import "@nomicfoundation/hardhat-chai-matchers";
+import "@nomicfoundation/hardhat-network-helpers";
+import "@nomicfoundation/hardhat-verify";
+import "@typechain/hardhat";
+import "hardhat-gas-reporter";
+import "solidity-coverage";
 import "hardhat-contract-sizer"
 
 const solidityConfig = {
