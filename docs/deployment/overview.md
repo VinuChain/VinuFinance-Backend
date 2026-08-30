@@ -188,9 +188,9 @@ await emergency.deployed();
 - Consider batch deployment scripts
 
 The repository's release build is pinned to solc `0.8.36`, EVM target
-`cancun`, optimizer runs `200`, and Yul enabled in both Hardhat and Foundry.
-Run `yarn verify:compiler` to compare the resolved settings and deployed
-bytecode before deployment.
+`cancun`, optimizer runs `200`, Yul enabled, and metadata bytecode hashes
+disabled in both Hardhat and Foundry. Run `yarn verify:compiler` to compare the
+resolved settings and deployed bytecode before deployment.
 
 ## Verification
 
@@ -240,7 +240,8 @@ If automatic verification fails:
 1. Flatten contract source
 2. Open `https://mainnet.vinuexplorer.org` and choose **Verify Contract**
 3. Upload the standard JSON input from `artifacts/build-info/`
-4. Match solc `0.8.36`, EVM `cancun`, optimizer runs `200`, and Yul enabled
+4. Match solc `0.8.36`, EVM `cancun`, optimizer runs `200`, Yul enabled, and
+   metadata bytecode hash `none`
 
 ## Post-Deployment Tasks
 

@@ -29,9 +29,9 @@ local and CI installs so compiler and plugin versions cannot drift.
 
 The Hardhat and Foundry compiler settings are intentionally identical:
 **solc 0.8.36**, **EVM Cancun**, optimizer enabled with **200 runs**, and **Yul
-enabled**. Run `yarn verify:compiler` to rebuild both artifacts and compare
-resolved settings plus metadata-stripped init/runtime bytecode for all four
-deployed contracts.
+enabled**, with the metadata bytecode hash disabled for deterministic output.
+Run `yarn verify:compiler` to rebuild both artifacts and compare resolved
+settings and exact init/runtime bytecode for all four deployed contracts.
 
 Run the backend typecheck before tests:
 

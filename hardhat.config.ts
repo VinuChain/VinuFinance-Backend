@@ -22,6 +22,7 @@ const solidityConfig = {
             runs: 200,
             details: { yul: true },
         },
+        metadata: { bytecodeHash: "none" },
     },
 }
 

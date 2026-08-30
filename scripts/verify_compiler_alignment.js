@@ -6,8 +6,8 @@
  * Hardhat build-info is the authoritative record of the Solidity compiler
  * input. Foundry's declarative settings are checked against its resolved
  * `forge config --json` output, then the generated artifacts are compared.
- * Runtime bytecode is compared after removing the compiler metadata trailer;
- * metadata contains source-path hashes that differ between the two tools.
+ * Artifacts must match byte-for-byte. Metadata-stripped hashes are also
+ * reported for concise executable-code evidence.
  */
 
 const fs = require("fs");
@@ -22,6 +22,7 @@ const expected = {
   optimizer: true,
   optimizerRuns: 200,
   yul: true,
+  bytecodeHash: "none",
 };
 
 function fail(message) {
@@ -104,6 +105,10 @@ for (const file of buildInfoFiles) {
       settings.optimizer.details.yul === expected.yul,
     `${file}: optimizer settings do not match ${JSON.stringify(expected)}`,
   );
+  assert(
+    settings.metadata && settings.metadata.bytecodeHash === expected.bytecodeHash,
+    `${file}: metadata bytecode hash does not match`,
+  );
 }
 
 const foundryToml = fs.readFileSync(path.join(root, "foundry.toml"), "utf8");
@@ -112,6 +117,10 @@ assert(readTomlString(foundryToml, "evm_version") === expected.evmVersion, "foun
 assert(readTomlBoolean(foundryToml, "optimizer"), "foundry.toml optimizer must be enabled");
 assert(readTomlNumber(foundryToml, "optimizer_runs") === expected.optimizerRuns, "foundry.toml optimizer_runs does not match");
 assert(/optimizer_details\s*=\s*\{[^}]*\byul\s*=\s*true\b[^}]*\}/s.test(foundryToml), "foundry.toml optimizer_details.yul must be true");
+assert(
+  readTomlString(foundryToml, "bytecode_hash") === expected.bytecodeHash,
+  "foundry.toml bytecode_hash does not match",
+);
 
 const forgeConfig = readResolvedForgeConfig();
 assert(forgeConfig.solc === expected.solc, `resolved Foundry solc does not match ${expected.solc}`);
@@ -119,12 +128,21 @@ assert(forgeConfig.evm_version === expected.evmVersion, `resolved Foundry evm_ve
 assert(forgeConfig.optimizer === expected.optimizer, "resolved Foundry optimizer must be enabled");
 assert(forgeConfig.optimizer_runs === expected.optimizerRuns, "resolved Foundry optimizer_runs does not match");
 assert(forgeConfig.optimizer_details && forgeConfig.optimizer_details.yul === expected.yul, "resolved Foundry optimizer_details.yul must be true");
+assert(forgeConfig.bytecode_hash === expected.bytecodeHash, "resolved Foundry bytecode_hash does not match");
 
 const contracts = ["BasePool", "Controller", "MultiClaim", "EmergencyWithdrawal"];
 const comparisons = [];
 for (const name of contracts) {
   const hardhat = readJson(path.join("artifacts", "contracts", `${name}.sol`, `${name}.json`));
   const foundry = readJson(path.join("out", `${name}.sol`, `${name}.json`));
+  assert(
+    normalizeBytecode(hardhat.bytecode) === normalizeBytecode(foundry.bytecode.object),
+    `${name}: exact init bytecode differs`,
+  );
+  assert(
+    normalizeBytecode(hardhat.deployedBytecode) === normalizeBytecode(foundry.deployedBytecode.object),
+    `${name}: exact deployed runtime bytecode differs`,
+  );
   const hardhatInit = stripMetadata(hardhat.bytecode);
   const foundryInit = stripMetadata(foundry.bytecode.object);
   const hardhatRuntime = stripMetadata(hardhat.deployedBytecode);
@@ -152,6 +170,7 @@ console.log(JSON.stringify({
       optimizer: forgeConfig.optimizer,
       optimizerRuns: forgeConfig.optimizer_runs,
       yul: forgeConfig.optimizer_details.yul,
+      bytecodeHash: forgeConfig.bytecode_hash,
     },
   },
   deployedRuntime: comparisons,

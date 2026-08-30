@@ -38,9 +38,9 @@ module.exports = {
 ```
 
 Build and deploy from the pinned toolchain: solc `0.8.36`, EVM target
-`cancun`, optimizer enabled with `200` runs, and Yul enabled. These settings
-are also pinned in `foundry.toml`; run `yarn verify:compiler` before a release
-to compare both artifact pipelines.
+`cancun`, optimizer enabled with `200` runs, Yul enabled, and metadata bytecode
+hash `none`. These settings are also pinned in `foundry.toml`; run
+`yarn verify:compiler` before a release to compare both artifact pipelines.
 
 ### MetaMask Setup
 
@@ -274,7 +274,8 @@ If automatic verification fails:
 3. Click "Verify Contract"
 4. Select "Solidity (Standard JSON-Input)"
 5. Upload the matching build input from `artifacts/build-info/`
-6. Match solc `0.8.36`, EVM `cancun`, optimizer runs `200`, and Yul enabled
+6. Match solc `0.8.36`, EVM `cancun`, optimizer runs `200`, Yul enabled, and
+   metadata bytecode hash `none`
 
 ## Gas Costs on VinuChain
 
