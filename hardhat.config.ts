@@ -1,4 +1,4 @@
-require('dotenv').config()
+require('dotenv').config({ quiet: true })
 require("@nomiclabs/hardhat-ethers")
 require('solidity-docgen');
 import { HardhatUserConfig } from "hardhat/config";
