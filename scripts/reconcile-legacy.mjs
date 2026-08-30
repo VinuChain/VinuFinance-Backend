@@ -88,6 +88,10 @@ function resolveReadTag(requestedBlock, resolvedBlock) {
   return selected;
 }
 
+function safeRpcOrigin(url) {
+  return (url instanceof URL ? url : new URL(url)).origin;
+}
+
 function parseArgs(argv) {
   const args = { json: false, manifest: DEFAULT_MANIFEST };
   for (let index = 0; index < argv.length; index += 1) {
@@ -141,7 +145,8 @@ class RpcClient {
   constructor(url, timeoutMs = 20_000) {
     const parsed = new URL(url);
     if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) throw new Error("RPC URL must be an https/http URL without credentials");
-    this.url = parsed.toString();
+    this.requestUrl = parsed.toString();
+    this.url = safeRpcOrigin(parsed);
     this.timeoutMs = timeoutMs;
     this.nextId = 1;
   }
@@ -150,7 +155,7 @@ class RpcClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(this.url, {
+      const response = await fetch(this.requestUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
@@ -400,6 +405,8 @@ async function readPool(rpc, pool, manifest, tag, blockTimestamp, maxLoans, find
       repaid: decodeBool(data, 5),
     };
     loan.borrower = await readAddress(rpc, pool.address, "loanIdxToBorrower(uint256)", [{ type: "uint256", value: index }], tag);
+    const observedLoan = manifest.observedLoans?.find((item) => sameAddress(item.pool, pool.address) && String(item.loanIdx) === index.toString());
+    if (observedLoan?.borrower) compare(findings, `${pool.id}.loan${index}.borrower`, observedLoan.borrower, loan.borrower, "OBSERVED_LOAN_BORROWER_MISMATCH");
     loans.push(loan);
   }
   const outstanding = loans.filter((loan) => !loan.repaid);
@@ -485,7 +492,7 @@ Options:
 Exit codes: 0 healthy, 2 reconciled but degraded by known legacy risks, 1 RPC or accounting mismatch.`);
 }
 
-export { NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, keccak256, loadManifest, readNewSubPoolEvents, resolveReadTag, validateManifest };
+export { NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, keccak256, loadManifest, readNewSubPoolEvents, resolveReadTag, safeRpcOrigin, validateManifest };
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
@@ -508,6 +515,9 @@ export async function main(argv = process.argv.slice(2)) {
     if (usdtPools.filter((pool) => pool.declaredCollateralDecimals !== manifest.tokens[pool.collateralToken].decimals).length !== 2) throw new Error("Manifest must identify two declared/token decimal mismatches");
     if (manifest.pools.some((pool) => pool.sourceVerification !== "NONE")) throw new Error("Legacy pool source verification must not be claimed");
     if (manifest.network.eventScanStartBlock !== 100000) throw new Error("Manifest eventScanStartBlock must remain 100000");
+    const observedLoan = manifest.observedLoans?.find((item) => sameAddress(item.pool, "0xB8F54383b78FAb60D2eCedc59B5cde9a6ae655d1") && String(item.loanIdx) === "1");
+    if (observedLoan?.borrower !== "0x9ceaab056d465812c9e0edce6f0f24f4d99ee79a") throw new Error("Manifest wvc-vinu-legacy-1 loan 1 borrower changed without evidence");
+    if (safeRpcOrigin("https://rpc-user:rpc-password@rpc.vinuchain.org/private/secret?api_key=query-secret#fragment-secret") !== "https://rpc.vinuchain.org") throw new Error("RPC URL redaction self-check failed");
     const result = { status: "PASS", manifest: args.manifest, observedBlock: manifest.network.observedBlock, observedBlockTimestamp: manifest.network.observedBlockTimestamp, pools: manifest.pools.length, usdtPools: usdtPools.length, decimalMismatches: 2, sourceVerification: "NONE_FOR_POOLS", keccak: "PASS" };
     if (args.json) console.log(jsonStringify(result));
     else console.log(`Legacy reconciliation self-check passed (${manifest.pools.length} pools; ${usdtPools.length} USDT pools; 2 declared/token decimal mismatches; Keccak-256 verified).`);

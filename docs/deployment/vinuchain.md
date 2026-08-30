@@ -175,14 +175,19 @@ npx hardhat run scripts/deploy-vinuchain.js --network vinuchain
 
 Verification is a release-recording step, not proof that the current checkout
 matches an existing mainnet address. For the immutable `legacy-mainnet-v1`
-generation, use [`legacy-vinuchain.md`](legacy-vinuchain.md): its deployment-era
-source is Vita-Inu commit `142a918c0be2f4107d28e24da37ed019ad3558ed` with
-Solidity `0.8.21`, OpenZeppelin `4.8.2`, optimizer runs `200`, and Yul enabled.
-The original artifact and metadata are unavailable, so the ten legacy pools
-must remain unverified. Only the original operator, with the original
-standard-JSON compiler input and constructor arguments, can submit a valid
-explorer verification request. Do not submit the current checkout’s artifacts
-or copied illustrative values for those addresses.
+generation, use [`legacy-vinuchain.md`](legacy-vinuchain.md). The exact
+source-blob provenance located for that generation is Vita-Inu commit
+`142a918c0be2f4107d28e24da37ed019ad3558ed` (short commit `142a918`); the
+commit identifies the source snapshot only and does not prove the deployment
+compiler input or settings. An independent reconstruction of metadata-stripped
+runtime bytecode used Solidity `0.8.21`, OpenZeppelin `4.8.2`, optimizer runs
+`200`, Yul enabled, and the deployment-era bytecode target. These are
+reconstructed bytecode-matching settings, not evidence that the commit was
+compiled that way. The original artifact, exact standard-JSON compiler input,
+and metadata remain unavailable, so deployed legacy pool source is unverified.
+Only the original operator, with that original compiler input and constructor
+arguments, can submit a valid explorer verification request. Do not submit the
+current checkout’s artifacts or copied illustrative values for those addresses.
 
 ## Gas Costs on VinuChain
 

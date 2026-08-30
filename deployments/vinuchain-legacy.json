@@ -448,6 +448,7 @@
     {
       "pool": "0xB8F54383b78FAb60D2eCedc59B5cde9a6ae655d1",
       "loanIdx": 1,
+      "borrower": "0x9ceaab056d465812c9e0edce6f0f24f4d99ee79a",
       "repayment": "69499626795437056113178",
       "expiry": 1715889529,
       "repaid": true,

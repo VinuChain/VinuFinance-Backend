@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, keccak256, loadManifest, readNewSubPoolEvents, resolveReadTag, validateManifest } from "./reconcile-legacy.mjs";
+import { NEW_SUB_POOL_INTERFACE, NEW_SUB_POOL_TOPIC, keccak256, loadManifest, readNewSubPoolEvents, resolveReadTag, safeRpcOrigin, validateManifest } from "./reconcile-legacy.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = validateManifest(loadManifest(resolve(root, "deployments/vinuchain-legacy.json")));
@@ -37,6 +37,8 @@ const runtimeHashes = [
 ].map((item) => item.runtimeKeccak);
 assert.ok(runtimeHashes.every((hash) => /^0x[0-9a-f]{64}$/.test(hash)), "runtime hashes must be lowercase normalized hex");
 assert.equal(manifest.contracts.controller.address.toLowerCase(), "0x17ba239f2815ba01152522521737275a2439216f");
+assert.equal(manifest.observedLoans.find((loan) => loan.pool.toLowerCase() === "0xb8f54383b78fab60d2ecedc59b5cde9a6ae655d1" && loan.loanIdx === 1).borrower, "0x9ceaab056d465812c9e0edce6f0f24f4d99ee79a");
+assert.equal(safeRpcOrigin("https://rpc-user:rpc-password@rpc.vinuchain.org/private/secret?api_key=query-secret#fragment-secret"), "https://rpc.vinuchain.org");
 assert.ok(readFileSync(resolve(root, "deployments/vinuchain-legacy.json"), "utf8").includes("Panic(0x11)"));
 
 const eventLogs = manifest.pools.map((pool) => {

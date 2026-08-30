@@ -38,14 +38,20 @@ that the state changed.
 
 The current checkout is **not** bytecode-equivalent to the immutable legacy
 BasePool deployment. Do not run a generic or current-checkout Hardhat
-verification command against these mainnet addresses. The strongest
-deployment-era source-generation match is Vita-Inu commit
-`142a918c0be2f4107d28e24da37ed019ad3558ed`, with Solidity `0.8.21`, OpenZeppelin
-`4.8.2`, optimizer runs `200`, Yul enabled, and the deployment-era bytecode
-target. The original artifact, exact compiler input, and metadata JSON are not
-available; the ten pools therefore remain unverified. Verification is possible
-only after the original operator supplies that artifact/metadata bundle and
-the explorer accepts its standard JSON input and constructor arguments.
+verification command against these mainnet addresses.
+
+The exact source-blob provenance we located is the Vita-Inu source at commit
+`142a918c0be2f4107d28e24da37ed019ad3558ed` (short commit `142a918`). That
+commit identifies the source snapshot only; it does not prove the compiler
+input or settings used for the deployed contracts. Separately, an independent
+reconstruction of the metadata-stripped runtime bytecode used Solidity
+`0.8.21`, OpenZeppelin `4.8.2`, optimizer runs `200`, Yul enabled, and the
+deployment-era bytecode target. Those reconstructed settings are a bytecode
+matching hypothesis, not deployment evidence. The original artifact, exact
+standard-JSON compiler input, and metadata JSON remain unavailable, so the
+deployed legacy pool source remains unverified. Verification is possible only
+after the original operator supplies that artifact/metadata bundle and the
+explorer accepts its standard JSON input and constructor arguments.
 
 ## Core contracts and helpers
 
