@@ -9,14 +9,16 @@ import {IBasePool} from "./interfaces/IBasePool.sol";
 
 /// @title MultiClaim
 /// @author Samuele Marro
-/// @notice Allows a user to claim multiple non-consecutive loans in a single transaction
+/// @notice Allows a user to claim bounded consecutive loan groups in one transaction
 contract MultiClaim is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    uint256 public constant MAX_CLAIM_BATCH = 50;
+
     /// @notice Claims multiple contracts 
     ///
-    /// @dev Calling with [[1, 2], 3] and [1, 0] will claim loan indexes 1 and 2 (reinvesting)
-    ///      and then claim loan index 3 (not reinvesting)
+    /// @dev Groups are still one global consecutive claim prefix: a later group's
+    ///      first index must immediately follow the preceding group's last index.
     ///
     /// @param _pool Pool for which to claim
     /// @param _loanIdxs Array of arrays of loan indexes to claim
@@ -33,16 +35,42 @@ contract MultiClaim is ReentrancyGuard {
             _loanIdxs.length == _isReinvested.length,
             "MultiClaim: Inconsistent lengths."
         );
+        uint256 totalIndexes;
+        for (uint256 i = 0; i < _loanIdxs.length; i++) {
+            require(
+                _loanIdxs[i].length > 0,
+                "MultiClaim: Empty loan index sub-array."
+            );
+            require(
+                _loanIdxs[i].length <= MAX_CLAIM_BATCH - totalIndexes,
+                "MultiClaim: Claim batch too large."
+            );
+            totalIndexes += _loanIdxs[i].length;
+            for (uint256 j = 1; j < _loanIdxs[i].length; j++) {
+                require(
+                    _loanIdxs[i][j - 1] < type(uint256).max &&
+                        _loanIdxs[i][j] == _loanIdxs[i][j - 1] + 1,
+                    "MultiClaim: Non-consecutive loan indices."
+                );
+            }
+            if (i > 0) {
+                uint256 previousLast = _loanIdxs[i - 1][_loanIdxs[i - 1].length - 1];
+                require(
+                    previousLast < type(uint256).max &&
+                        _loanIdxs[i][0] == previousLast + 1,
+                    "MultiClaim: Non-consecutive loan indices."
+                );
+            }
+        }
+
+        // The complete nested batch is validated before the first external call
+        // so a malformed later group cannot leave an earlier group claimed.
         (IERC20 loanCcyToken, IERC20 collCcyToken, , , , , , , ) = _pool.getPoolInfo();
 
         uint256 loanCcyBalanceBefore = loanCcyToken.balanceOf(address(this));
         uint256 collCcyBalanceBefore = collCcyToken.balanceOf(address(this));
         
         for (uint256 i = 0; i < _loanIdxs.length; i++) {
-            require(
-                _loanIdxs[i].length > 0,
-                "MultiClaim: Empty loan index sub-array."
-            );
             _pool.claim(
                 msg.sender,
                 _loanIdxs[i],

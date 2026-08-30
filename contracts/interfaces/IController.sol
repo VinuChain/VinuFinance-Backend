@@ -154,5 +154,11 @@ interface IController is IERC165 {
      * @param _duration Duration of the deposit by the awardee
      * @param _rewardCoefficient Reward coefficient of the awarding pool
      */
-    function requestTokenDistribution(address _account, uint128 _liquidity, uint32 _duration, uint96 _rewardCoefficient) external;
+    function requestTokenDistribution(address _account, uint128 _liquidity, uint32 _duration, uint96 _rewardCoefficient) external returns (uint256 amount);
+
+    /**
+     * @notice Retries a previously requested reward amount for an account.
+     * @dev The pool may call this only for its own pending reward debt.
+     */
+    function requestTokenDistributionExact(address _account, uint256 _amount) external returns (uint256 amount);
 }

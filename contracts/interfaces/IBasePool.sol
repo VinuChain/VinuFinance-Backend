@@ -72,6 +72,13 @@ interface IBasePool {
         uint256 indexed loanIdx
     );
 
+    event RewardDebtUpdated(
+        address indexed account,
+        uint256 requested,
+        uint256 credited,
+        uint256 pendingDebt
+    );
+
     event ApprovalUpdate(
         address ownerOrBeneficiary,
         address sender,
@@ -213,6 +220,20 @@ interface IBasePool {
         uint256 _deadline
     ) external;
 
+    /**
+     * @notice Retries a bounded controller deposit for revenue held by the pool.
+     */
+    function flushPendingRevenue(IERC20 _token, uint256 _maxAmount)
+        external
+        returns (uint256 flushedAmount);
+
+    /**
+     * @notice Retries a bounded controller reward credit for an LP.
+     */
+    function retryPendingReward(address _account, uint256 _maxAmount)
+        external
+        returns (uint256 credited);
+
 
     /**
      * @notice Function which sets approval for another to perform a certain function on sender's behalf
@@ -298,7 +319,7 @@ interface IBasePool {
      * @return loanAmount Amount of loan currency to be trasnferred to the borrower
      * @return repaymentAmount Amount of loan currency borrower must repay to reclaim collateral
      * @return pledgeAmount Amount of collateral currency borrower retrieves upon repayment
-     * @return _creatorFee Amount of collateral currency to be transferred to treasury
+     * @return _creatorFee Amount of collateral currency deposited as protocol revenue
      * @return _totalLiquidity The total liquidity of the pool (pre-borrow) that is available for new loans
      */
     function loanTerms(

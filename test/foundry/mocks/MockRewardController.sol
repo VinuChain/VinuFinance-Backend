@@ -51,18 +51,29 @@ contract MockRewardController is IController {
         uint128 _liquidity,
         uint32 _duration,
         uint96 _rewardCoefficient
-    ) external override {
+    ) external override returns (uint256 amount) {
         distributionCalls++;
         if (uint256(_liquidity) > maxLiquidityRequested) {
             maxLiquidityRequested = uint256(_liquidity);
         }
-        uint256 amount = (uint256(_liquidity) * uint256(_duration) * uint256(_rewardCoefficient)) / REWARD_BASE;
+        amount = (uint256(_liquidity) * uint256(_duration) * uint256(_rewardCoefficient)) / REWARD_BASE;
         if (amount > rewardSupply) {
             amount = rewardSupply;
         }
         unchecked {
             rewardSupply -= amount;
         }
+        rewardBalance[_account] += amount;
+        totalDistributed += amount;
+    }
+
+    function requestTokenDistributionExact(address _account, uint256 _amount)
+        external
+        override
+        returns (uint256 amount)
+    {
+        amount = _amount > rewardSupply ? rewardSupply : _amount;
+        rewardSupply -= amount;
         rewardBalance[_account] += amount;
         totalDistributed += amount;
     }

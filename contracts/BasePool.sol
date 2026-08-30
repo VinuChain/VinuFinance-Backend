@@ -5,6 +5,7 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import {IBasePool} from "./interfaces/IBasePool.sol";
 import "./interfaces/IPausable.sol";
 import "./interfaces/IController.sol";
@@ -24,8 +25,10 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     // Keep the exponent in loanTerms within the supported token-decimal range.
     uint256 constant MAX_TOKEN_DECIMALS = 30;
     uint256 constant BASE = 10 ** 18;
+    // Bound claim work per transaction so every validation path is predictable.
+    uint256 public constant MAX_CLAIM_BATCH = 50;
 
-    // Maximum creator fee, denominated in BASE
+    // Maximum protocol revenue fee, denominated in BASE
     uint256 constant MAX_FEE = 300 * 10 ** 14; // 300bps
 
     // Minimum liquidity, denominated in loanCcy decimals
@@ -51,7 +54,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     // Maximum loan per unit of collateral, denominated in loanCcy decimals
     uint256 maxLoanPerColl;
 
-    // Creator fee, denominated in BASE
+    // Protocol revenue fee, denominated in BASE
     uint256 creatorFee;
 
     // Total liquidity, denominated in loanCcy decimals
@@ -94,6 +97,17 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     // Reward coefficient, denominated in BASE
     uint96 rewardCoefficient;
 
+    // Number of LP shares that have already claimed each settled loan.
+    // Kept separate from LoanInfo so its getter ABI remains unchanged.
+    mapping(uint256 => uint128) public claimedLpShares;
+
+    // Revenue held by the pool while a best-effort controller deposit is pending.
+    mapping(IERC20 => uint256) public pendingRevenue;
+
+    // Reward amounts requested while the controller was unavailable or
+    // under-funded. This explicit debt can be retried without blocking exits.
+    mapping(address => uint256) public pendingRewardDebt;
+
     /**
      * @notice Creates a new pool
      *
@@ -106,7 +120,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
      * @param _rs [r1, r2] Interest rate parameters, denominated in BASE and w.r.t. tenor (i.e., not annualized)
      * @param _liquidityBnds [liquidityBnd1, liquidityBnd2] Liqudity parameters, denominated in loanCcy decimals
      * @param _minLoan Minimum loan, denominated in loanCcy decimals
-     * @param _creatorFee Creator fee, denominated in BASE
+     * @param _creatorFee Protocol revenue fee, denominated in BASE
      * @param _minLiquidity Minimum liquidity, denominated in loanCcy decimals
      * @param _poolController Address of the controller contract
      * @param _rewardCoefficient Reward coefficient, denominated in BASE
@@ -133,7 +147,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
             revert("Loan and collateral tokens must not be 0.");
         require(address(_tokens[0]).code.length > 0, "Loan token must be a contract.");
         require(address(_tokens[1]).code.length > 0, "Collateral token must be a contract.");
-        require(_readTokenDecimals(_tokens[0]) == 18, "Loan token decimals must be 18.");
+        require(_readTokenDecimals(_tokens[0]) <= MAX_TOKEN_DECIMALS, "Invalid loan decimals.");
         require(_readTokenDecimals(_tokens[1]) == _collTokenDecimals, "Collateral decimals mismatch.");
         require(address(_poolController) != address(0), "Invalid Controller.");
         require(address(_poolController).code.length > 0, "Controller must be a contract.");
@@ -142,13 +156,23 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         require(_loanTenor >= MIN_TENOR, "Loan tenor must be at least MIN_TENOR.");
         require(_loanTenor <= MAX_TIMESTAMP, "Loan tenor too large.");
         require(_maxLoanPerColl > 0, "Max loan must not be 0.");
+        require(
+            _maxLoanPerColl <= type(uint256).max / (2 * uint256(type(uint128).max)),
+            "Max loan ratio too large."
+        );
         if (_rs[0] <= _rs[1] || _rs[1] == 0) revert("Invalid rate parameters.");
         if (_liquidityBnds[1] <= _liquidityBnds[0] || _liquidityBnds[0] == 0)
             revert("Invalid liquidity bounds");
         // ensure LP shares can be minted based on 1/1000th of minLp discretization
         require(_minLiquidity >= 1000, "Min liquidity must be at least 1000.");
+        require(_minLiquidity < type(uint128).max, "Min liquidity too large.");
+        require(
+            _minLiquidity <= type(uint256).max / (2 * (10 ** _collTokenDecimals)),
+            "Min liquidity too large."
+        );
         require(_minLoan > 0, "Min loan must not be 0.");
         require(_minLoan <= type(uint256).max / BASE, "Min loan too large.");
+        require(_minLoan <= type(uint128).max, "Min loan too large.");
         require(_creatorFee <= MAX_FEE, "Creator fee too high.");
         loanCcyToken = _tokens[0];
         collCcyToken = _tokens[1];
@@ -194,7 +218,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         uint128 _sendAmount,
         uint256 _deadline,
         uint256 _referralCode
-    ) external override payable nonReentrant {
+    ) external override payable nonReentrant whenNotPaused {
         require(msg.value == 0, "Native value unsupported.");
         // verify LP info and eligibility
         checkTimestamp(_deadline);
@@ -209,9 +233,12 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         ) = _addLiquidity(_onBehalfOf, _sendAmount);
 
 
-        _updateRewardAndSend(_onBehalfOf, lastTrackedLiquidity[_onBehalfOf] + _sendAmount);
+        _updateRewardAndSend(
+            _onBehalfOf,
+            uint256(lastTrackedLiquidity[_onBehalfOf]) + uint256(_sendAmount)
+        );
 
-        // transfer dust to creator if any
+        // Deposit rounding dust as protocol revenue if any.
         if (dust > 0) {
             _depositRevenue(loanCcyToken, dust);
         }
@@ -254,7 +281,8 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         LpInfo storage lpInfo = addrToLpInfo[_onBehalfOf];
         uint256 shareLength = lpInfo.sharesOverTime.length;
         if (
-            shareLength * numShares == 0 ||
+            shareLength == 0 ||
+            numShares == 0 ||
             lpInfo.sharesOverTime[shareLength - 1] < numShares
         ) revert("Invalid removal operation.");
         if (block.timestamp < lpInfo.earliestRemove)
@@ -262,8 +290,11 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         uint256 _totalLiquidity = totalLiquidity;
         uint128 _totalLpShares = totalLpShares;
         // update state of pool
-        uint256 liquidityRemoved = (numShares *
-            (_totalLiquidity - minLiquidity)) / _totalLpShares;
+        uint256 liquidityRemoved = Math.mulDiv(
+            numShares,
+            _totalLiquidity - minLiquidity,
+            _totalLpShares
+        );
         totalLpShares -= numShares;
         totalLiquidity = _totalLiquidity - liquidityRemoved;
 
@@ -271,9 +302,15 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         updateLpArrays(lpInfo, numShares, false);
 
         _updateRewardAndSend(_onBehalfOf, _satSub(lastTrackedLiquidity[_onBehalfOf], liquidityRemoved));
+        if (lpInfo.sharesOverTime[lpInfo.sharesOverTime.length - 1] == 0) {
+            // No current shares means no liquidity is eligible for the next reward interval.
+            lastTrackedLiquidity[_onBehalfOf] = 0;
+        }
 
-        // transfer liquidity
-        _transferExact(loanCcyToken, msg.sender, liquidityRemoved);
+        // Avoid invoking non-standard token callbacks for a zero-value exit.
+        if (liquidityRemoved > 0) {
+            _transferExact(loanCcyToken, msg.sender, liquidityRemoved);
+        }
         // spawn event
         emit RemoveLiquidity(
             _onBehalfOf,
@@ -313,6 +350,9 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     ) external payable override nonReentrant whenNotPaused {
         require(msg.value == 0, "Native value unsupported.");
         uint256 _timestamp = checkTimestamp(_deadline);
+        // LoanInfo expiry and LP cursors are uint32-backed. Do not record a
+        // loan whose index would make the next cursor unrepresentable.
+        require(loanIdx < type(uint32).max, "Loan index too large.");
         // check if atomic add and borrow as well as sanity check of onBehalf address
         if (
             lastAddOfTxOrigin[tx.origin] == _timestamp ||
@@ -353,11 +393,10 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
             loanIdx = _loanIdx + 1;
         }
         {
-            // we first retrieve the tokens because we might not have enough balance
-            // to pay the creator fee
+            // Retrieve collateral before recording protocol revenue.
             _transferFromExact(collCcyToken, msg.sender, _sendAmount);
 
-            // transfer creator fee to creator in collateral ccy
+            // Deposit protocol revenue in collateral currency.
             _depositRevenue(collCcyToken, _creatorFee);
 
             // transfer loanAmount in loan ccy
@@ -394,7 +433,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         if (_loanIdx == 0 || _loanIdx >= loanIdx) revert("Invalid loan index.");
         address _loanOwner = loanIdxToBorrower[_loanIdx];
 
-        if (!(_loanOwner == _recipient || msg.sender == _recipient))
+        if (msg.sender != _loanOwner && _recipient != _loanOwner)
             revert("Invalid recipient.");
         checkSenderApproval(_loanOwner, IBasePool.ApprovalTypes.REPAY);
 
@@ -435,41 +474,20 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
             claimReinvestmentCheck(_deadline, _onBehalfOf);
         }
         checkSenderApproval(_onBehalfOf, IBasePool.ApprovalTypes.CLAIM);
-        LpInfo storage lpInfo = addrToLpInfo[_onBehalfOf];
-
-        // verify LP info and eligibility
-        if (_loanIdxs.length * lpInfo.sharesOverTime.length == 0) revert("Nothing to claim.");
-        if (_loanIdxs[0] == 0) revert("Invalid loan index.");
-
-        (
-            uint256 sharesUnchangedUntilLoanIdx,
-            uint256 applicableShares
-        ) = claimsChecksAndSetters(
-                _loanIdxs[0],
-                _loanIdxs[_loanIdxs.length - 1],
-                lpInfo
-            );
-
-        // iterate over loans to get claimable amounts
-        ClaimInfo memory claimInfo = getClaimsFromList(
+        (ClaimInfo memory claimInfo, uint256 reinvestedAmount) = _prepareClaim(
+            _onBehalfOf,
             _loanIdxs,
-            _loanIdxs.length,
-            applicableShares
+            _isReinvested
         );
-            
+
         (uint128 lastLiquidity, uint32 timeSinceLastReward) = _updateReward(_onBehalfOf, _satSub(lastTrackedLiquidity[_onBehalfOf], claimInfo.loanAmount));
 
-        // update LP's from loan index to prevent double claiming and check share pointer
-        checkSharePtrIncrement(
-            lpInfo,
-            _loanIdxs[_loanIdxs.length - 1],
-            lpInfo.currSharePtr,
-            sharesUnchangedUntilLoanIdx
-        );
-
-        if (claimInfo.repayments > 0 && _isReinvested) {
+        if (reinvestedAmount > 0) {
             // Note that 0 time has elapsed since the previous update, so no funds should be awarded
-            _updateReward(_onBehalfOf, lastTrackedLiquidity[_onBehalfOf] + claimInfo.repayments);
+            _updateReward(
+                _onBehalfOf,
+                uint256(lastTrackedLiquidity[_onBehalfOf]) + reinvestedAmount
+            );
         }
 
         _sendReward(_onBehalfOf, lastLiquidity, timeSinceLastReward);
@@ -478,11 +496,58 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
             _onBehalfOf,
             claimInfo.repayments,
             claimInfo.collateral,
-            _isReinvested
+            _isReinvested,
+            reinvestedAmount
         );
 
         // spawn event
         emit Claim(_onBehalfOf, _loanIdxs, claimInfo.repayments, claimInfo.collateral);
+    }
+
+    function _prepareClaim(
+        address _onBehalfOf,
+        uint256[] calldata _loanIdxs,
+        bool _isReinvested
+    ) internal returns (ClaimInfo memory claimInfo, uint256 reinvestedAmount) {
+        LpInfo storage lpInfo = addrToLpInfo[_onBehalfOf];
+
+        // Validate the complete batch before touching claim state. In particular,
+        // a claim can never skip an unsettled loan or silently advance the cursor.
+        if (
+            _loanIdxs.length == 0 ||
+            _loanIdxs.length > MAX_CLAIM_BATCH ||
+            lpInfo.sharesOverTime.length == 0
+        ) revert("Invalid claim batch.");
+
+        _normalizeZeroShareIntervals(lpInfo);
+        uint256 startIndex = _loanIdxs[0];
+        uint256 endIndex = _loanIdxs[_loanIdxs.length - 1];
+        if (
+            startIndex == 0 ||
+            endIndex >= loanIdx ||
+            startIndex != lpInfo.fromLoanIdx
+        ) revert("Invalid claim range.");
+
+        for (uint256 i = 1; i < _loanIdxs.length; ) {
+            if (
+                _loanIdxs[i - 1] == type(uint256).max ||
+                _loanIdxs[i] != _loanIdxs[i - 1] + 1
+            )
+                revert("Non-consecutive loan indices.");
+            unchecked {
+                i++;
+            }
+        }
+
+        // Aggregate each loan using the LP shares applicable at that exact index.
+        claimInfo = _collectClaims(_loanIdxs, lpInfo);
+        reinvestedAmount = _isReinvested
+            ? _reinvestableAmount(claimInfo.repayments)
+            : 0;
+
+        // The collector advances the cursor through every consecutive index and
+        // then skips any zero-share intervals before the next claim.
+        _advanceSharePointer(lpInfo, endIndex);
     }
 
     /**
@@ -641,7 +706,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
      * @return loanAmount Amount of loanCcyToken to borrow
      * @return repaymentAmount Amount of loanCcyToken to repay
      * @return pledgeAmount Amount of collCcyToken to pledge
-     * @return _creatorFee Creator fee
+     * @return _creatorFee Protocol revenue fee
      * @return _totalLiquidity Total liquidity
      */
     function loanTerms(
@@ -659,141 +724,181 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         )
     {
         // compute terms (as uint256)
-        _creatorFee = (_inAmountAfterFees * creatorFee) / BASE;
+        _creatorFee = Math.mulDiv(_inAmountAfterFees, creatorFee, BASE);
         uint256 pledge = _inAmountAfterFees - _creatorFee;
         _totalLiquidity = totalLiquidity;
         if (_totalLiquidity <= minLiquidity) revert("Insufficient liquidity.");
-        uint256 loan = (pledge *
-            maxLoanPerColl *
-            (_totalLiquidity - minLiquidity)) /
-            (pledge *
-                maxLoanPerColl +
-                (_totalLiquidity - minLiquidity) *
-                10 ** collTokenDecimals);
+        uint256 availableLiquidity = _totalLiquidity - minLiquidity;
+        uint256 collateralValue = pledge * maxLoanPerColl;
+        uint256 collateralValueAtLiquidity = availableLiquidity * 10 ** collTokenDecimals;
+        uint256 loan = Math.mulDiv(
+            collateralValue,
+            availableLiquidity,
+            collateralValue + collateralValueAtLiquidity
+        );
         if (loan < minLoan) revert("Loan too small.");
         uint256 postLiquidity = _totalLiquidity - loan;
-        assert(postLiquidity >= minLiquidity);
+        require(postLiquidity >= minLiquidity, "Insufficient post-borrow liquidity.");
         // we use the average rate to calculate the repayment amount
-        uint256 avgRate = (getRate(_totalLiquidity - minLiquidity) + getRate(postLiquidity - minLiquidity)) /
-            2;
+        uint256 avgRate = Math.average(
+            getRate(_totalLiquidity - minLiquidity),
+            getRate(postLiquidity - minLiquidity)
+        );
         // if pre- and post-borrow liquidity are within target liquidity range
         // then the repayment amount exactly matches the amount of integrating the
         // loan size over the infinitesimal rate; else the repayment amount is
         // larger than the amount of integrating loan size over rate;
-        uint256 repayment = (loan * (BASE + avgRate)) / BASE;
+        uint256 interest = _mulDivOrMax(loan, avgRate, BASE);
+        require(interest <= type(uint256).max - loan, "Repayment too large.");
+        uint256 repayment = loan + interest;
         // return terms (as uint128)
-        assert(uint128(loan) == loan);
+        require(loan <= type(uint128).max, "Loan amount too large.");
         loanAmount = uint128(loan);
-        assert(uint128(repayment) == repayment);
+        require(repayment <= type(uint128).max, "Repayment amount too large.");
         repaymentAmount = uint128(repayment);
-        assert(uint128(pledge) == pledge);
+        require(pledge <= type(uint128).max, "Pledge amount too large.");
         pledgeAmount = uint128(pledge);
         if (repaymentAmount <= loanAmount) revert("Erroneous loan terms.");
     }
 
     /**
-     * @notice Function which updates from index and checks if share pointer should be incremented
-     *
-     * @dev This function will update new from index for LP to last claimed id + 1. If the current
-     * share pointer is not at the end of the LP's shares over time array, and if the new from index
-     * is equivalent to the index where shares were then added/removed by LP, then increment share pointer
-     *
-     * @param _lpInfo Storage struct of LpInfo passed into function
-     * @param _lastIdxFromUserInput Last claimable index passed by user into claims
-     * @param _currSharePtr Current pointer for shares over time array for LP
-     * @param _sharesUnchangedUntilLoanIdx Loan index where the number of shares owned by LP changed.
+     * @notice Advances a position cursor over zero-share intervals.
+     * @dev A zero-share interval is not claimable, but it must not strand a
+     *      later position behind an old cursor. The first non-zero interval
+     *      (or the current global loan index when none remains) is the only
+     *      effective fromLoanIdx exposed to the next claim.
      */
-    function checkSharePtrIncrement(
-        LpInfo storage _lpInfo,
-        uint256 _lastIdxFromUserInput,
-        uint256 _currSharePtr,
-        uint256 _sharesUnchangedUntilLoanIdx
-    ) internal {
-        // update LPs from loan index
-        _lpInfo.fromLoanIdx = uint32(_lastIdxFromUserInput) + 1;
-        // if current share pointer is not already at end and
-        // the last loan claimed was exactly one below the currentToLoanIdx
-        // then increment the current share pointer
-        if (
-            _currSharePtr < _lpInfo.sharesOverTime.length - 1 &&
-            _lastIdxFromUserInput + 1 == _sharesUnchangedUntilLoanIdx
-        ) {
+    function _normalizeZeroShareIntervals(LpInfo storage _lpInfo) internal {
+        uint256 sharesLength = _lpInfo.sharesOverTime.length;
+        require(sharesLength > 0, "Nothing to claim.");
+
+        uint256 sharePtr = _lpInfo.currSharePtr;
+        require(sharePtr < sharesLength, "Invalid share pointer.");
+        uint256 effectiveFrom = _lpInfo.fromLoanIdx;
+
+        while (sharePtr < sharesLength && _lpInfo.sharesOverTime[sharePtr] == 0) {
+            if (sharePtr >= _lpInfo.loanIdxsWhereSharesChanged.length) {
+                effectiveFrom = loanIdx;
+                break;
+            }
+            effectiveFrom = _lpInfo.loanIdxsWhereSharesChanged[sharePtr];
             unchecked {
-                _lpInfo.currSharePtr++;
+                sharePtr++;
             }
         }
+
+        require(
+            sharePtr <= type(uint32).max && effectiveFrom <= type(uint32).max,
+            "LP history exceeds uint32."
+        );
+        _lpInfo.currSharePtr = uint32(sharePtr);
+        _lpInfo.fromLoanIdx = uint32(effectiveFrom);
+    }
+
+    /** @notice Advances the cursor after a consecutive claim batch. */
+    function _advanceSharePointer(LpInfo storage _lpInfo, uint256 _lastIndex) internal {
+        require(_lastIndex < type(uint32).max, "Loan index too large.");
+        uint256 sharePtr = _lpInfo.currSharePtr;
+        uint256 sharesLength = _lpInfo.sharesOverTime.length;
+        uint256 changesLength = _lpInfo.loanIdxsWhereSharesChanged.length;
+
+        while (sharePtr < changesLength && _lastIndex + 1 >= _lpInfo.loanIdxsWhereSharesChanged[sharePtr]) {
+            unchecked {
+                sharePtr++;
+            }
+        }
+
+        require(sharePtr <= type(uint32).max, "LP history exceeds uint32.");
+        _lpInfo.currSharePtr = uint32(sharePtr);
+        _lpInfo.fromLoanIdx = uint32(_lastIndex + 1);
+        _normalizeZeroShareIntervals(_lpInfo);
+        require(_lpInfo.currSharePtr < sharesLength, "Invalid share pointer.");
     }
 
     /**
-     * @notice Function which performs check and possibly updates lpInfo when claiming
-     *
-     * @dev This function will update first check if the current share pointer for the LP
-     * is pointing to a zero value. In that case, pointer will be incremented (since pointless to claim for
-     * zero shares) and fromLoanIdx is then updated accordingly from LP's loanIdxWhereSharesChanged array.
-     * Other checks are then performed to make sure that LP is entitled to claim from indices sent in
-     *
-     * @param _startIndex Start index sent in by user when claiming
-     * @param _endIndex Last claimable index passed by user into claims
-     * @param _lpInfo Current LpInfo struct passed in as storage
-     *
-     * @return _sharesUnchangedUntilLoanIdx Index up to which the LP did not change shares
-     * @return _applicableShares Number of shares to use in the claiming calculation
+     * @notice Computes a pro-rata amount from the cumulative claimed share
+     *         count. The final claim receives the exact remaining residual.
      */
-    function claimsChecksAndSetters(
-        uint256 _startIndex,
-        uint256 _endIndex,
+    function _cumulativeClaimAmount(
+        uint128 _amount,
+        uint128 _oldShares,
+        uint128 _newShares,
+        uint128 _totalShares
+    ) internal pure returns (uint256 amount) {
+        require(_totalShares > 0 && _oldShares <= _totalShares && _newShares <= _totalShares, "Invalid claim shares.");
+        require(_newShares >= _oldShares, "Claim shares decreased.");
+        if (_newShares == _totalShares) {
+            return uint256(_amount) - Math.mulDiv(_amount, _oldShares, _totalShares);
+        }
+        amount = Math.mulDiv(_amount, _newShares, _totalShares) -
+            Math.mulDiv(_amount, _oldShares, _totalShares);
+    }
+
+    /**
+     * @notice Collects claims while accounting for each loan's share history.
+     * @dev State updates are intentionally made here, rather than in a view
+     *      pre-calculation, so cumulative floors are shared by all LPs.
+     */
+    function _collectClaims(
+        uint256[] calldata _loanIdxs,
         LpInfo storage _lpInfo
-    )
-        internal
-        returns (
-            uint256 _sharesUnchangedUntilLoanIdx,
-            uint256 _applicableShares
-        )
-    {
-        /*
-         * check if reasonable to automatically increment share pointer for intermediate period with zero shares
-         * and push fromLoanIdx forward
-         * Note: Since there is an offset of length 1 for the sharesOverTime and loanIdxWhereSharesChanged
-         * this is why the fromLoanIdx needs to be updated before the current share pointer increments
-         **/
-        uint256 currSharePtr = _lpInfo.currSharePtr;
-        if (_lpInfo.sharesOverTime[currSharePtr] == 0) {
-            // if share ptr at end of shares over time array, then LP still has 0 shares and should revert right away
-            if (currSharePtr == _lpInfo.sharesOverTime.length - 1)
-                revert("Zero-share claim.");
-            _lpInfo.fromLoanIdx = uint32(
-                _lpInfo.loanIdxsWhereSharesChanged[currSharePtr]
+    ) internal returns (ClaimInfo memory claimInfo) {
+        uint256 sharePtr = _lpInfo.currSharePtr;
+        uint256 changesLength = _lpInfo.loanIdxsWhereSharesChanged.length;
+        uint256 sharesLength = _lpInfo.sharesOverTime.length;
+
+        for (uint256 i = 0; i < _loanIdxs.length; ) {
+            uint256 index = _loanIdxs[i];
+            while (sharePtr < changesLength && index >= _lpInfo.loanIdxsWhereSharesChanged[sharePtr]) {
+                unchecked {
+                    sharePtr++;
+                }
+            }
+            require(sharePtr < sharesLength, "Invalid share pointer.");
+
+            LoanInfo memory loanInfo = loanIdxToLoanInfo[index];
+            uint128 oldClaimedShares = claimedLpShares[index];
+            uint256 applicableShares = _lpInfo.sharesOverTime[sharePtr];
+            require(applicableShares <= type(uint128).max, "Invalid claim shares.");
+            require(
+                uint256(oldClaimedShares) + applicableShares <= loanInfo.totalLpShares,
+                "Claimed shares exceed total."
             );
+            uint128 newClaimedShares = oldClaimedShares + uint128(applicableShares);
+
+            if (loanInfo.repaid) {
+                claimInfo.repayments += _cumulativeClaimAmount(
+                    loanInfo.repayment,
+                    oldClaimedShares,
+                    newClaimedShares,
+                    loanInfo.totalLpShares
+                );
+            } else if (loanInfo.expiry < block.timestamp) {
+                claimInfo.collateral += _cumulativeClaimAmount(
+                    loanInfo.collateral,
+                    oldClaimedShares,
+                    newClaimedShares,
+                    loanInfo.totalLpShares
+                );
+            } else {
+                revert("Cannot claim with unsettled loan.");
+            }
+
+            claimInfo.loanAmount += _cumulativeClaimAmount(
+                loanInfo.loanAmount,
+                oldClaimedShares,
+                newClaimedShares,
+                loanInfo.totalLpShares
+            );
+            claimedLpShares[index] = newClaimedShares;
+
             unchecked {
-                currSharePtr = ++_lpInfo.currSharePtr;
+                i++;
             }
         }
 
-        /*
-         * first loan index (which is what _fromLoanIdx will become)
-         * cannot be less than lpInfo.fromLoanIdx (double-claiming or not entitled since
-         * wasn't invested during that time), unless special case of first loan globally
-         * and LpInfo.fromLoanIdx is 1
-         * Note: This still works for claim, since in that function startIndex !=0 is already
-         * checked, so second part is always true in claim function
-         **/
-        if (
-            _startIndex < _lpInfo.fromLoanIdx &&
-            !(_startIndex == 0 && _lpInfo.fromLoanIdx == 1)
-        ) revert("Unentitled from loan indices.");
-
-        // infer applicable upper loan idx for which number of shares didn't change
-        _sharesUnchangedUntilLoanIdx = currSharePtr ==
-            _lpInfo.sharesOverTime.length - 1
-            ? loanIdx
-            : _lpInfo.loanIdxsWhereSharesChanged[currSharePtr];
-
-        // check passed last loan idx is consistent with constant share interval
-        if (_endIndex >= _sharesUnchangedUntilLoanIdx)
-            revert("Loan indexes with changing shares.");
-
-        // get applicable number of shares for pro-rata calculations (given current share pointer position)
-        _applicableShares = _lpInfo.sharesOverTime[currSharePtr];
+        require(sharePtr <= type(uint32).max, "LP history exceeds uint32.");
+        _lpInfo.currSharePtr = uint32(sharePtr);
     }
 
     /**
@@ -802,36 +907,40 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
      * @dev This function will reinvest the loan currency only (and only of course if _isReinvested is true)
      *
      * @param _onBehalfOf LP address which is owner or has approved sender to claim on their behalf (and possibly reinvest)
-     * @param _repayments Total repayments (loan currency) after all claims processed
-     * @param _collateral Total collateral (collateral currency) after all claims processed
-     * @param _isReinvested Flag for if LP wants claimed loanCcy to be re-invested
+    * @param _repayments Total repayments (loan currency) after all claims processed
+    * @param _collateral Total collateral (collateral currency) after all claims processed
+    * @param _isReinvested Flag for if LP wants claimed loanCcy to be re-invested
+     * @param _reinvestedAmount Portion of repayments that can mint LP shares
      */
     function claimTransferAndReinvestment(
         address _onBehalfOf,
         uint256 _repayments,
         uint256 _collateral,
-        bool _isReinvested
+        bool _isReinvested,
+        uint256 _reinvestedAmount
     ) internal {
         if (_repayments > 0) {
-            if (_isReinvested) {
+            if (_isReinvested && _reinvestedAmount > 0) {
                 // allows reinvestment and transfer of any dust from claim functions
                 (
                     uint256 dust,
                     uint256 newLpShares,
                     uint32 earliestRemove
-                ) = _addLiquidity(_onBehalfOf, _repayments);
+                ) = _addLiquidity(_onBehalfOf, _reinvestedAmount);
                 if (dust > 0) {
                     _depositRevenue(loanCcyToken, dust);
                 }
                 // spawn event
                 emit Reinvest(
                     _onBehalfOf,
-                    _repayments,
+                    _reinvestedAmount,
                     newLpShares,
                     earliestRemove,
                     loanIdx
                 );
             } else {
+                // A repayment too small to mint one share is still claimable;
+                // pay it out rather than reverting or crediting the tracker.
                 _transferExact(loanCcyToken, msg.sender, _repayments);
             }
         }
@@ -872,33 +981,74 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
             require(_inAmountAfterFees > minLiquidity, "Initial liquidity must exceed minimum.");
             dust = _totalLiquidity;
             _totalLiquidity = 0;
-            newLpShares = (_inAmountAfterFees * 1000) / minLiquidity;
+            newLpShares = Math.mulDiv(_inAmountAfterFees, 1000, minLiquidity);
         } else {
             assert(_totalLiquidity > 0);
-            newLpShares =
-                (_inAmountAfterFees * totalLpShares) /
-                _totalLiquidity;
+            newLpShares = Math.mulDiv(_inAmountAfterFees, totalLpShares, _totalLiquidity);
         }
         if (newLpShares == 0 || uint128(newLpShares) != newLpShares)
             revert("Invalid add amount.");
+        require(
+            newLpShares <= type(uint128).max - totalLpShares,
+            "LP shares too large."
+        );
         totalLpShares += uint128(newLpShares);
 
         require(totalLpShares < minLoan * BASE, "Cannot add liquidity.");
 
+        // loanTerms multiplies available liquidity by 10**collTokenDecimals.
+        // Keep every funded pool inside that arithmetic domain instead of
+        // allowing a later borrow to become permanently unusable.
+        uint256 maxTermLiquidity = type(uint256).max / (2 * (10 ** collTokenDecimals));
+        require(
+            _totalLiquidity <= maxTermLiquidity &&
+                _inAmountAfterFees <= maxTermLiquidity - _totalLiquidity,
+            "Liquidity too large."
+        );
         totalLiquidity = _totalLiquidity + _inAmountAfterFees;
         // update LP info
         bool isFirstAddLiquidity = lpInfo.fromLoanIdx == 0;
         if (isFirstAddLiquidity) {
+            require(loanIdx <= type(uint32).max, "Loan index too large.");
             lpInfo.fromLoanIdx = uint32(loanIdx);
             lpInfo.sharesOverTime.push(newLpShares);
         } else {
             // update both LP arrays and check for auto increment
             updateLpArrays(lpInfo, newLpShares, true);
         }
+        require(
+            block.timestamp <= MAX_TIMESTAMP - MIN_LPING_PERIOD,
+            "Timestamp too large."
+        );
         earliestRemove = uint32(block.timestamp + MIN_LPING_PERIOD);
         lpInfo.earliestRemove = earliestRemove;
         // keep track of add timestamp per tx origin to check for atomic add and borrows/rollOvers
         lastAddOfTxOrigin[tx.origin] = block.timestamp;
+    }
+
+    /**
+     * @notice Returns the repayment amount that can be reinvested without
+     *         hitting the zero-share add guard.
+     */
+    function _reinvestableAmount(uint256 _repayments) internal view returns (uint256) {
+        uint256 maxTermLiquidity = type(uint256).max / (2 * (10 ** collTokenDecimals));
+        uint256 newShares;
+        if (totalLiquidity != 0 &&
+            !(_repayments != 0 && totalLpShares > type(uint256).max / _repayments)) {
+            newShares = Math.mulDiv(_repayments, totalLpShares, totalLiquidity);
+        }
+        if (
+            block.timestamp > MAX_TIMESTAMP - MIN_LPING_PERIOD ||
+            _repayments < minLiquidity / 1000 ||
+            totalLpShares == 0 ||
+            totalLiquidity == 0 ||
+            newShares == 0 ||
+            newShares > type(uint128).max - totalLpShares ||
+            uint256(totalLpShares) + newShares >= minLoan * BASE ||
+            totalLiquidity > maxTermLiquidity ||
+            _repayments > maxTermLiquidity - totalLiquidity
+        ) return 0;
+        return _repayments;
     }
 
     /**
@@ -922,9 +1072,14 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         uint256 _originalSharesLen = _lpInfo.sharesOverTime.length;
         uint256 _originalLoanIdxsLen = _originalSharesLen - 1;
         uint256 currShares = _lpInfo.sharesOverTime[_originalSharesLen - 1];
-        uint256 newShares = _add
-            ? currShares + _newLpShares
-            : currShares - _newLpShares;
+        uint256 newShares;
+        if (_add) {
+            require(_newLpShares <= type(uint256).max - currShares, "LP shares too large.");
+            newShares = currShares + _newLpShares;
+        } else {
+            require(currShares >= _newLpShares, "Invalid removal operation.");
+            newShares = currShares - _newLpShares;
+        }
         bool loanCheck = (_originalLoanIdxsLen > 0 &&
             _lpInfo.loanIdxsWhereSharesChanged[_originalLoanIdxsLen - 1] ==
             _loanIdx);
@@ -951,6 +1106,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
             we want to keep it at end of the array 
             */
             else {
+                require(_lpInfo.currSharePtr < type(uint32).max, "LP history too large.");
                 pushLpArrays(_lpInfo, newShares, _loanIdx);
                 unchecked {
                     _lpInfo.currSharePtr++;
@@ -1001,6 +1157,8 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         uint256 _newShares,
         uint256 _loanIdx
     ) internal {
+        require(_lpInfo.sharesOverTime.length < type(uint32).max, "LP history too large.");
+        require(_loanIdx < type(uint32).max, "Loan index too large.");
         _lpInfo.sharesOverTime.push(_newShares);
         _lpInfo.loanIdxsWhereSharesChanged.push(_loanIdx);
     }
@@ -1019,7 +1177,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
      * @return repaymentAmount Amount of loan Ccy borrower needs to repay to claim collateral
      * @return pledgeAmount Amount of collCcy reclaimable upon repayment
      * @return expiry Timestamp after which loan expires
-     * @return _creatorFee Per transaction fee which levied for using the protocol
+     * @return _creatorFee Protocol revenue fee levied for using the protocol
      * @return _totalLiquidity Updated total liquidity (pre-borrow)
      */
     function _borrow(
@@ -1050,6 +1208,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         assert(_inAmountAfterFees != 0); // if 0 must have failed in loanTerms(...)
         if (loanAmount < _minLoanLimit) revert("Loan below limit.");
         if (repaymentAmount > _maxRepayLimit) revert("Repayment above limit.");
+        require(_timestamp <= MAX_TIMESTAMP - loanTenor, "Loan expiry too large.");
         uint256 expiryTimestamp = _timestamp + loanTenor;
         require(expiryTimestamp <= MAX_TIMESTAMP, "Loan expiry too large.");
         expiry = uint32(expiryTimestamp);
@@ -1084,6 +1243,7 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         uint256 _deadline,
         address _onBehalfOf
     ) internal view {
+        require(!paused(), "Pausable: paused");
         checkTimestamp(_deadline);
         checkSenderApproval(_onBehalfOf, IBasePool.ApprovalTypes.ADD_LIQUIDITY);
     }
@@ -1108,58 +1268,6 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
     }
 
     /**
-     * @notice Helper function used by claim function
-     *
-     * @dev This function is called by claim to check the passed array
-     * is valid and return the repayment and collateral amounts
-     *
-     * @param _loanIdxs Array of loan Idxs over which the LP would like to claim
-     * @param arrayLen Length of the loanIdxs array
-     * @param _shares LP shares owned by the LP during the period of the claims
-     *
-     * @return claimInfo struct containing repayments, collateral and loanAmount
-     */
-    function getClaimsFromList(
-        uint256[] calldata _loanIdxs,
-        uint256 arrayLen,
-        uint256 _shares
-    ) internal view returns (ClaimInfo memory claimInfo) {
-        uint256 repayments;
-        uint256 collateral;
-        uint256 loanAmount;
-
-        // aggregate claims from list
-        for (uint256 i = 0; i < arrayLen; ) {
-            LoanInfo memory loanInfo = loanIdxToLoanInfo[_loanIdxs[i]];
-            if (i > 0) {
-                if (_loanIdxs[i] <= _loanIdxs[i - 1])
-                    revert("Non-ascending loan indices.");
-            }
-            if (loanInfo.repaid) {
-                repayments +=
-                    (loanInfo.repayment * BASE) /
-                    loanInfo.totalLpShares;
-            } else if (loanInfo.expiry < block.timestamp) {
-                collateral +=
-                    (loanInfo.collateral * BASE) /
-                    loanInfo.totalLpShares;
-            } else {
-                revert("Cannot claim with unsettled loan.");
-            }
-
-            loanAmount += (loanInfo.loanAmount * BASE) / loanInfo.totalLpShares;
-
-            unchecked {
-                i++;
-            }
-        }
-        // return claims
-        claimInfo.repayments = (repayments * _shares) / BASE;
-        claimInfo.collateral = (collateral * _shares) / BASE;
-        claimInfo.loanAmount = (loanAmount * _shares) / BASE;
-    }
-
-    /**
      * @notice Returns the pool's rate given _liquidity to calculate a loan's
      * repayment amount
      *
@@ -1174,15 +1282,38 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
      */
     function getRate(uint256 _liquidity) internal view returns (uint256 rate) {
         if (_liquidity < liquidityBnd1) {
-            rate = (r1 * liquidityBnd1) / _liquidity;
+            rate = _mulDivOrMax(r1, liquidityBnd1, _liquidity);
         } else if (_liquidity <= liquidityBnd2) {
-            rate =
-                r2 +
-                ((r1 - r2) * (liquidityBnd2 - _liquidity)) /
-                (liquidityBnd2 - liquidityBnd1);
+            uint256 interpolation = _mulDivOrMax(
+                r1 - r2,
+                liquidityBnd2 - _liquidity,
+                liquidityBnd2 - liquidityBnd1
+            );
+            rate = interpolation > type(uint256).max - r2
+                ? type(uint256).max
+                : r2 + interpolation;
         } else {
             rate = r2;
         }
+    }
+
+    /**
+     * @dev Returns uint256.max instead of bubbling Math.mulDiv's overflow
+     *      revert. Callers can then apply their own bounded-domain error.
+     */
+    function _mulDivOrMax(uint256 _x, uint256 _y, uint256 _denominator)
+        internal
+        pure
+        returns (uint256 result)
+    {
+        uint256 high;
+        assembly {
+            let mm := mulmod(_x, _y, not(0))
+            let low := mul(_x, _y)
+            high := sub(sub(mm, low), lt(mm, low))
+        }
+        if (high >= _denominator) return type(uint256).max;
+        return Math.mulDiv(_x, _y, _denominator);
     }
 
     /**
@@ -1213,25 +1344,27 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
      */
     function _updateReward(address _account, uint256 _newLiquidity) internal returns (uint128 oldLiquidity, uint32 timeSinceLastReward) {
         uint32 previousRewardTimestamp = lastRewardTimestamp[_account];
-        assert(previousRewardTimestamp <= block.timestamp);
-        assert(uint128(_newLiquidity) == _newLiquidity);
+        // Reward timestamps are intentionally capped at the LoanInfo uint32
+        // ceiling. Existing positions remain exitable after that ceiling; a
+        // migration can reset reward accounting for future-generation pools.
+        uint256 cappedTimestamp = block.timestamp > MAX_TIMESTAMP
+            ? MAX_TIMESTAMP
+            : block.timestamp;
+        uint128 trackedLiquidity = _newLiquidity > type(uint128).max
+            ? type(uint128).max
+            : uint128(_newLiquidity);
 
         oldLiquidity = lastTrackedLiquidity[_account];
+        lastRewardTimestamp[_account] = uint32(cappedTimestamp);
+        lastTrackedLiquidity[_account] = trackedLiquidity;
 
-        lastRewardTimestamp[_account] = uint32(block.timestamp);
-        lastTrackedLiquidity[_account] = uint128(_newLiquidity);
-
-        if(previousRewardTimestamp == 0) {
-            return (0, 0);
+        if (previousRewardTimestamp == 0 || cappedTimestamp <= previousRewardTimestamp) {
+            return (oldLiquidity, 0);
         }
 
-        uint256 _timeSinceLastReward = block.timestamp - previousRewardTimestamp;
-
-        assert(uint128(oldLiquidity) == oldLiquidity);
-        assert(uint32(_timeSinceLastReward) == _timeSinceLastReward);
-        timeSinceLastReward = uint32(_timeSinceLastReward);
-
-        assert(uint32(block.timestamp) == block.timestamp);
+        uint256 elapsed = cappedTimestamp - previousRewardTimestamp;
+        if (elapsed > type(uint32).max) elapsed = type(uint32).max;
+        timeSinceLastReward = uint32(elapsed);
     }
 
     /**
@@ -1242,11 +1375,83 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
      * @param _timeSinceLastReward Time since the last reward was sent
      */
     function _sendReward(address _account, uint128 _liquidity, uint32 _timeSinceLastReward) internal {
-        if (_liquidity > 0 && _timeSinceLastReward > 0) {
-            try poolController.requestTokenDistribution(_account, _liquidity, _timeSinceLastReward, rewardCoefficient) {} catch {
-                // Do nothing
-            }
+        // Retry at most the currently outstanding debt before recording a new
+        // request. A failing or partially funded controller never blocks an LP
+        // exit and never makes the missing reward invisible.
+        if (pendingRewardDebt[_account] > 0) {
+            _retryPendingReward(_account, pendingRewardDebt[_account]);
         }
+
+        if (_liquidity == 0 || _timeSinceLastReward == 0) return;
+
+        uint256 rewardWeight = uint256(_timeSinceLastReward) * uint256(rewardCoefficient);
+        // Reward bookkeeping is optional and must never make a principal exit
+        // revert if an extreme coefficient would overflow the 256-bit product.
+        uint256 requested;
+        if (_liquidity != 0 && rewardWeight > type(uint256).max / uint256(_liquidity)) {
+            requested = type(uint256).max;
+        } else {
+            requested = Math.mulDiv(uint256(_liquidity), rewardWeight, BASE);
+        }
+        if (requested == 0) return;
+
+        uint256 credited;
+        try poolController.requestTokenDistribution(
+            _account,
+            _liquidity,
+            _timeSinceLastReward,
+            rewardCoefficient
+        ) returns (uint256 amount) {
+            credited = amount > requested ? requested : amount;
+        } catch {
+            credited = 0;
+        }
+
+        if (credited < requested) {
+            uint256 missing = requested - credited;
+            uint256 previousDebt = pendingRewardDebt[_account];
+            pendingRewardDebt[_account] =
+                missing > type(uint256).max - previousDebt
+                    ? type(uint256).max
+                    : previousDebt + missing;
+            emit RewardDebtUpdated(
+                _account,
+                requested,
+                credited,
+                pendingRewardDebt[_account]
+            );
+        }
+    }
+
+    /**
+     * @notice Permissionlessly retries an account's pending reward debt.
+     * @param _account LP account whose pending reward is being retried.
+     * @param _maxAmount Maximum debt to submit in this call.
+     */
+    function retryPendingReward(address _account, uint256 _maxAmount)
+        external
+        override
+        nonReentrant
+        returns (uint256 credited)
+    {
+        require(_maxAmount > 0, "Invalid reward amount.");
+        credited = _retryPendingReward(_account, _maxAmount);
+    }
+
+    function _retryPendingReward(address _account, uint256 _maxAmount)
+        internal
+        returns (uint256 credited)
+    {
+        uint256 debt = pendingRewardDebt[_account];
+        if (debt == 0 || _maxAmount == 0) return 0;
+        uint256 request = debt < _maxAmount ? debt : _maxAmount;
+        try poolController.requestTokenDistributionExact(_account, request) returns (uint256 amount) {
+            credited = amount > request ? request : amount;
+            pendingRewardDebt[_account] = debt - credited;
+        } catch {
+            // Rewards are optional bookkeeping; preserve debt and keep exits live.
+        }
+        emit RewardDebtUpdated(_account, request, credited, pendingRewardDebt[_account]);
     }
 
     /**
@@ -1270,12 +1475,64 @@ contract BasePool is IBasePool, Pausable, ReentrancyGuard, IPausable {
         _updateRewardAndSend(_onBehalfOf, lastTrackedLiquidity[_onBehalfOf]);
     }
 
+    /**
+     * @notice Flushes at most `_maxAmount` of revenue that is pending in the
+     *         pool. Anyone may retry a failed optional controller deposit.
+     * @return flushedAmount Amount transferred to the controller.
+     */
+    function flushPendingRevenue(IERC20 _token, uint256 _maxAmount)
+        external
+        nonReentrant
+        returns (uint256 flushedAmount)
+    {
+        require(_maxAmount > 0, "Invalid revenue amount.");
+        uint256 pending = pendingRevenue[_token];
+        require(pending > 0, "No pending revenue.");
+        uint256 amount = pending < _maxAmount ? pending : _maxAmount;
+        flushedAmount = _flushPendingRevenue(_token, amount);
+    }
+
     function _depositRevenue(IERC20 _token, uint256 _amount) internal {
+        if (_amount == 0) return;
+        require(_amount <= type(uint256).max - pendingRevenue[_token], "Revenue too large.");
+        pendingRevenue[_token] += _amount;
+        _flushPendingRevenue(_token, _amount);
+    }
+
+    function _flushPendingRevenue(IERC20 _token, uint256 _amount) internal returns (uint256 flushedAmount) {
+        uint256 pending = pendingRevenue[_token];
+        if (_amount == 0 || pending == 0) return 0;
+        if (_amount > pending) _amount = pending;
+
+        uint256 poolBefore = _token.balanceOf(address(this));
+        if (poolBefore < _amount) return 0;
+
         _token.safeIncreaseAllowance(address(poolController), _amount);
-        try poolController.depositRevenue(_token, _amount) {} catch {}
-        // Revenue is best-effort. Never leave a controller allowance behind
-        // after a failed (or partial) optional deposit.
+        bool deposited;
+        try poolController.depositRevenue(_token, _amount) {
+            deposited = true;
+        } catch {
+            // Optional revenue must never make the originating operation fail.
+        }
+
+        uint256 poolAfter = _token.balanceOf(address(this));
+        // Always consume the temporary helper allowance, including a failed
+        // or non-transferring controller callback.
         _token.safeApprove(address(poolController), 0);
+
+        if (!deposited || poolBefore < poolAfter) return 0;
+
+        // A trusted Controller transfers exactly `_amount`. If an optional
+        // controller accepts a fee-on-transfer token and reports success,
+        // account only the measured amount so pool balance plus pending
+        // revenue remains conserved instead of making the shortfall invisible.
+        flushedAmount = poolBefore - poolAfter;
+        // A controller cannot consume more than its exact temporary allowance.
+        // Revert if a token callback/rebase violates that invariant; reverting
+        // also rolls back any external transfer made by the malformed call.
+        if (flushedAmount > _amount) revert("Unsupported token behavior.");
+        pendingRevenue[_token] = pending - flushedAmount;
+        return flushedAmount;
     }
 
     function _transferFromExact(IERC20 _token, address _from, uint256 _amount) internal {

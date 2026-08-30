@@ -16,6 +16,7 @@ contract ReentrantPoolStub {
     IERC20 public loanCcy;
     IERC20 public collCcy;
     MultiClaim public multiClaim;
+    uint256 public claimCalls;
     constructor(IERC20 _loanCcy, IERC20 _collCcy) { loanCcy = _loanCcy; collCcy = _collCcy; }
     function setMultiClaim(MultiClaim _mc) external { multiClaim = _mc; }
     function getPoolInfo()
@@ -23,6 +24,7 @@ contract ReentrantPoolStub {
         returns (IERC20, IERC20, uint256, uint256, uint256, uint256, uint256, uint96, uint256)
     { return (loanCcy, collCcy, 0, 0, 0, 0, 0, 0, 0); }
     function claim(address, uint256[] calldata, bool, uint256) external {
+        claimCalls++;
         uint256[][] memory idxs = new uint256[][](1);
         idxs[0] = new uint256[](1);
         idxs[0][0] = 1;
@@ -52,5 +54,28 @@ contract MultiClaimReentrancyTest is Test {
         reinvest[0] = false;
         vm.expectRevert(bytes("ReentrancyGuard: reentrant call"));
         multiClaim.claimMultiple(IBasePool(address(stub)), idxs, reinvest, block.timestamp);
+    }
+
+    function test_claimMultiple_rejectsCrossGroupGapBeforePoolClaim() public {
+        uint256[][] memory idxs = new uint256[][](2);
+        idxs[0] = new uint256[](1);
+        idxs[0][0] = 1;
+        idxs[1] = new uint256[](1);
+        idxs[1][0] = 3;
+        bool[] memory reinvest = new bool[](2);
+        vm.expectRevert(bytes("MultiClaim: Non-consecutive loan indices."));
+        multiClaim.claimMultiple(IBasePool(address(stub)), idxs, reinvest, block.timestamp);
+        assertEq(stub.claimCalls(), 0, "gap must be rejected before any pool claim");
+    }
+
+    function test_claimMultiple_rejectsInnerGapBeforePoolClaim() public {
+        uint256[][] memory idxs = new uint256[][](1);
+        idxs[0] = new uint256[](2);
+        idxs[0][0] = 1;
+        idxs[0][1] = 3;
+        bool[] memory reinvest = new bool[](1);
+        vm.expectRevert(bytes("MultiClaim: Non-consecutive loan indices."));
+        multiClaim.claimMultiple(IBasePool(address(stub)), idxs, reinvest, block.timestamp);
+        assertEq(stub.claimCalls(), 0, "inner gap must be rejected before any pool claim");
     }
 }

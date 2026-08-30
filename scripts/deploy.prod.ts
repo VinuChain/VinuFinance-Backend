@@ -72,9 +72,12 @@ function envOr(name: string, fallback: string): string {
 function envIntOr(name: string, fallback: number): number {
     const v = process.env[name]
     if (v === undefined || v.trim() === "") return fallback
-    const n = Number(v)
-    if (!Number.isInteger(n) || n < 0) {
+    if (!/^\d+$/.test(v.trim())) {
         throw new Error(`Env var ${name} must be a non-negative integer: "${v}"`)
+    }
+    const n = Number(v)
+    if (!Number.isSafeInteger(n)) {
+        throw new Error(`Env var ${name} must be <= Number.MAX_SAFE_INTEGER: "${v}"`)
     }
     return n
 }
@@ -235,9 +238,32 @@ async function main() {
     if (LOAN_TENOR < 86400) {
         throw new Error(`LOAN_TENOR (${LOAN_TENOR}) must be >= 86400 (MIN_TENOR; BasePool.sol:130).`)
     }
+    if (LOAN_TENOR > 0xffffffff) {
+        throw new Error(`LOAN_TENOR (${LOAN_TENOR}) must fit the uint32 expiry ceiling (BasePool.sol:130).`)
+    }
     // _maxLoanPerColl > 0 (BasePool.sol:131).
     if (BigNumber.from(MAX_LOAN_PER_COLL).lte(0)) {
         throw new Error(`MAX_LOAN_PER_COLL (${MAX_LOAN_PER_COLL}) must be > 0 (BasePool.sol:131).`)
+    }
+    const MAX_UINT256 = BigNumber.from(2).pow(256).sub(1)
+    const MAX_UINT128 = BigNumber.from(2).pow(128).sub(1)
+    const MAX_LOAN_RATIO = MAX_UINT256.div(MAX_UINT128.mul(2))
+    for (const [name, value] of [
+        ["R1", R1],
+        ["R2", R2],
+        ["MAX_LOAN_PER_COLL", MAX_LOAN_PER_COLL],
+        ["LIQUIDITY_BND_1", LIQUIDITY_BND_1],
+        ["LIQUIDITY_BND_2", LIQUIDITY_BND_2],
+        ["MIN_LOAN", MIN_LOAN],
+        ["MIN_LIQUIDITY", MIN_LIQUIDITY],
+        ["CREATOR_FEE", CREATOR_FEE],
+    ] as Array<[string, string]>) {
+        if (BigNumber.from(value).lt(0) || BigNumber.from(value).gt(MAX_UINT256)) {
+            throw new Error(`${name} (${value}) must fit uint256 BasePool arithmetic.`)
+        }
+    }
+    if (BigNumber.from(MAX_LOAN_PER_COLL).gt(MAX_LOAN_RATIO)) {
+        throw new Error(`MAX_LOAN_PER_COLL (${MAX_LOAN_PER_COLL}) exceeds the safe BasePool arithmetic bound.`)
     }
     // _rs[0] > _rs[1] && _rs[1] != 0 (BasePool.sol:132: reverts if r1 <= r2 || r2 == 0).
     if (BigNumber.from(R2).lte(0)) {
@@ -259,6 +285,9 @@ async function main() {
     if (BigNumber.from(MIN_LIQUIDITY).lt(1000)) {
         throw new Error(`MIN_LIQUIDITY (${MIN_LIQUIDITY}) must be >= 1000 (BasePool.sol:136).`)
     }
+    if (BigNumber.from(MIN_LIQUIDITY).gte(MAX_UINT128)) {
+        throw new Error(`MIN_LIQUIDITY (${MIN_LIQUIDITY}) must fit below uint128.max.`)
+    }
     // _minLoan > 0. The constructor does NOT validate minLoan, but minLoan == 0 BRICKS
     // the (immutable) pool: _addLiquidity requires `totalLpShares < minLoan * BASE`
     // (BasePool.sol:867), which with minLoan == 0 is `totalLpShares < 0` — always
@@ -268,6 +297,12 @@ async function main() {
             `MIN_LOAN (${MIN_LOAN}) must be > 0: minLoan == 0 bricks the pool ` +
                 `(_addLiquidity requires totalLpShares < minLoan * BASE; BasePool.sol:867).`
         )
+    }
+    if (BigNumber.from(MIN_LOAN).gt(MAX_UINT128)) {
+        throw new Error(`MIN_LOAN (${MIN_LOAN}) must fit uint128 loan accounting.`)
+    }
+    if (BigNumber.from(MIN_LOAN).gt(MAX_UINT256.div(MONE))) {
+        throw new Error(`MIN_LOAN (${MIN_LOAN}) is too large for the BasePool share bound.`)
     }
     // _creatorFee in [0, MAX_FEE]. MAX_FEE = 300*10**14 = 3e16 = 0.03 * 1e18
     // (BasePool.sol:23,137). envBaseOr uses parseUnits, which ACCEPTS a negative human
@@ -322,8 +357,7 @@ async function main() {
     //   - all 3 must have contract code (getCode != 0x);
     //   - LOAN_CCY_TOKEN & COLL_CCY_TOKEN must expose decimals() (they ARE ERC20s and
     //     their decimals feed the economic params / loanTerms scaling);
-    //   - VOTE_TOKEN is the Controller's IERC20 voteToken — we verify it's a contract
-    //     and (cheaply) that it answers totalSupply(), without assuming its decimals.
+    //   - VOTE_TOKEN is the Controller's fixed 18-decimal governance/reward token.
     await assertIsContract("LOAN_CCY_TOKEN", LOAN_CCY_TOKEN)
     await assertIsContract("COLL_CCY_TOKEN", COLL_CCY_TOKEN)
     await assertIsContract("VOTE_TOKEN", VOTE_TOKEN)
@@ -332,11 +366,19 @@ async function main() {
     // here — the loan-denominated econ params are operator-provided raw units — but a
     // failed read means LOAN_CCY_TOKEN is not the ERC20 the operator thinks it is.
     const LOAN_TOKEN_DECIMALS = await readTokenDecimals("LOAN_CCY_TOKEN", LOAN_CCY_TOKEN)
+    const VOTE_TOKEN_DECIMALS = await readTokenDecimals("VOTE_TOKEN", VOTE_TOKEN)
+    if (VOTE_TOKEN_DECIMALS !== 18) {
+        throw new Error(`VOTE_TOKEN decimals (${VOTE_TOKEN_DECIMALS}) must be exactly 18 for Controller rewards.`)
+    }
 
     // Collateral decimals: QUERY on-chain and USE as the BasePool _collTokenDecimals
     // arg. BasePool.loanTerms scales by `10 ** collTokenDecimals` (BasePool.sol:654),
     // so a wrong value mis-collateralizes the pool for any non-18-decimal collateral.
     const COLL_TOKEN_DECIMALS = await readTokenDecimals("COLL_CCY_TOKEN", COLL_CCY_TOKEN)
+    const collateralScale = BigNumber.from(10).pow(COLL_TOKEN_DECIMALS)
+    if (BigNumber.from(MIN_LIQUIDITY).gt(MAX_UINT256.div(collateralScale.mul(2)))) {
+        throw new Error(`MIN_LIQUIDITY (${MIN_LIQUIDITY}) exceeds the safe collateral-decimal liquidity domain.`)
+    }
     // If the operator set the optional COLL_TOKEN_DECIMALS override, assert it matches
     // the on-chain value (catches a wrong override before any deploy).
     if (COLL_TOKEN_DECIMALS_OVERRIDE !== undefined && COLL_TOKEN_DECIMALS_OVERRIDE !== COLL_TOKEN_DECIMALS) {
@@ -346,8 +388,8 @@ async function main() {
         )
     }
 
-    // Vote token: confirm it answers a basic ERC20 view (totalSupply) so a non-token
-    // contract address is caught. Cheap, read-only; result is informational.
+    // Vote token: confirm it answers a basic ERC20 view so a non-token contract
+    // address is caught. Cheap, read-only; result is informational.
     try {
         const voteToken = new ethers.Contract(
             VOTE_TOKEN,

@@ -1,20 +1,24 @@
 import * as fs from "fs";
 
-const addTimestampSupport = (contractSrc) => {
+const addTimestampSupport = (contractSrc, includeLoanIdx = false) => {
+    const loanIdxShim = includeLoanIdx
+        ? '    function setLoanIdx(uint256 _loanIdx) external { loanIdx = _loanIdx; }\n'
+        : ''
     contractSrc = contractSrc.replace('// TMP-TIMESTAMP-METHODS', `
     uint32 time;
     function setTime(uint32 _time) external { time = _time; }
     function getTime() public view returns (uint32) { return time; } 
+${loanIdxShim}
     `)
     contractSrc = contractSrc.replace(/block\.timestamp/g, 'getTime()')
     return contractSrc
 }
 
-const preprocessContract = (contractSrc) => {
+const preprocessContract = (contractSrc, includeLoanIdx = false) => {
 
     contractSrc = contractSrc.replace(/contract (\S+)/g, 'contract $1_parsed')
 
-    contractSrc = addTimestampSupport(contractSrc)
+    contractSrc = addTimestampSupport(contractSrc, includeLoanIdx)
     /*if (DISABLE_REVERTS) {
         contractSrc = disableReverts(contractSrc)
     }
@@ -33,7 +37,16 @@ const preprocessContract = (contractSrc) => {
 
 const transpileContract = (path) => {
     let contractSrc = fs.readFileSync(path, { encoding : 'utf-8' })
-    contractSrc = preprocessContract(contractSrc)
+    contractSrc = preprocessContract(contractSrc, path.endsWith('/BasePool.sol'))
+
+    // Controller records the BasePool runtime code hash when it is deployed.
+    // The test-only timestamp shim changes BasePool bytecode, so make the
+    // parsed controller hash the parsed pool bytecode as well.
+    if (path.endsWith('/Controller.sol')) {
+        contractSrc = contractSrc
+            .replace('import "./BasePool.sol";', 'import "./BasePool_parsed.sol";')
+            .replace('type(BasePool).runtimeCode', 'type(BasePool_parsed).runtimeCode')
+    }
 
     const newPath = path.replace('.sol', '_parsed.sol')
 

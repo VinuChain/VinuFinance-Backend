@@ -479,6 +479,40 @@ contract FundSafetyTest is Test {
         assertTrue(target.paused(), "a vote exactly at threshold must execute");
     }
 
+    function test_governanceThresholdCeilDoesNotAuthorizeOneOfThree() public {
+        SafetyToken voteToken = new SafetyToken("Vote", "VOTE");
+        Controller controller = new Controller(
+            IERC20(address(voteToken)),
+            5000,
+            5000,
+            5000,
+            5000,
+            100,
+            0,
+            address(this)
+        );
+        address voterTwo = address(0x2222);
+        address voterThree = address(0x3333);
+        _approveAndFund(voteToken, LP, 1, address(controller));
+        _approveAndFund(voteToken, voterTwo, 1, address(controller));
+        _approveAndFund(voteToken, voterThree, 1, address(controller));
+        vm.prank(LP);
+        controller.depositVoteToken(1);
+        vm.prank(voterTwo);
+        controller.depositVoteToken(1);
+        vm.prank(voterThree);
+        controller.depositVoteToken(1);
+
+        PausableSafetyTarget target = new PausableSafetyTarget();
+        controller.createProposal(target, IController.Action.PAUSE, block.timestamp + 100);
+        vm.prank(LP);
+        controller.vote(0);
+        assertFalse(target.paused(), "one of three votes must not pass a 50% threshold");
+        vm.prank(voterTwo);
+        controller.vote(0);
+        assertTrue(target.paused(), "two of three votes must pass a 50% threshold");
+    }
+
     function test_constructorRejectsBadCodeMetadataMinLoanAndTenor() public {
         ZeroDecimalSafetyToken collateral = new ZeroDecimalSafetyToken("Collateral", "COLL");
         MockRewardController controller = new MockRewardController();
@@ -488,8 +522,17 @@ contract FundSafetyTest is Test {
         _pool(IERC20(address(0x1234)), IERC20(address(collateral)), IController(address(controller)), 0);
 
         MetadataSafetyToken loan6 = new MetadataSafetyToken(6);
-        vm.expectRevert(bytes("Loan token decimals must be 18."));
-        _pool(IERC20(address(loan6)), IERC20(address(collateral)), IController(address(controller)), 0);
+        BasePool loan6Pool = _pool(
+            IERC20(address(loan6)),
+            IERC20(address(collateral)),
+            IController(address(controller)),
+            0
+        );
+        _approveAndFund(loan6, LP, MIN_LIQUIDITY * 3, address(loan6Pool));
+        vm.prank(LP);
+        loan6Pool.addLiquidity(LP, MIN_LIQUIDITY * 2, block.timestamp, 0);
+        (uint128 loan6Amount, , , , ) = loan6Pool.loanTerms(10_000);
+        assertGt(loan6Amount, 0, "six-decimal loan token must support loan terms");
 
         vm.expectRevert(bytes("Collateral decimals mismatch."));
         _pool(IERC20(address(loan)), IERC20(address(collateral)), IController(address(controller)), 18);
@@ -500,6 +543,16 @@ contract FundSafetyTest is Test {
 
         vm.expectRevert(bytes("Min loan must not be 0."));
         _poolWith(IERC20(address(loan)), IERC20(address(collateral)), IController(address(controller)), 0, LOAN_TENOR, 0);
+
+        vm.expectRevert(bytes("Min loan too large."));
+        _poolWith(
+            IERC20(address(loan)),
+            IERC20(address(collateral)),
+            IController(address(controller)),
+            0,
+            LOAN_TENOR,
+            uint256(type(uint128).max) + 1
+        );
 
         vm.expectRevert(bytes("Loan tenor too large."));
         _poolWith(
@@ -515,6 +568,41 @@ contract FundSafetyTest is Test {
         _pool(IERC20(address(loan)), IERC20(address(collateral)), IController(address(0x5678)), 0);
     }
 
+    function test_loanIndexCeilingRejectsNewBorrowBeforeRecordingState() public {
+        SafetyToken loan = new SafetyToken("Loan", "LOAN");
+        ZeroDecimalSafetyToken collateral = new ZeroDecimalSafetyToken("Collateral", "COLL");
+        MockRewardController controller = new MockRewardController();
+        BasePool pool = _pool(IERC20(address(loan)), IERC20(address(collateral)), IController(address(controller)), 0);
+        _approveAndFund(loan, LP, MIN_LIQUIDITY * 3, address(pool));
+        vm.prank(LP);
+        pool.addLiquidity(LP, MIN_LIQUIDITY * 2 + 1, block.timestamp, 0);
+        _approveAndFund(collateral, BORROWER, 10_000, address(pool));
+
+        // `loanIdx` is a uint256 storage counter, but every recorded loan
+        // feeds uint32-backed expiry/share cursors.
+        vm.store(address(pool), bytes32(uint256(12)), bytes32(uint256(type(uint32).max)));
+        vm.expectRevert(bytes("Loan index too large."));
+        vm.prank(BORROWER);
+        pool.borrow(BORROWER, 1_000, 0, type(uint128).max, block.timestamp, 0);
+    }
+
+    function test_extremeRateTermsFailBoundedlyWithoutArithmeticPanic() public {
+        SafetyToken loan = new SafetyToken("Loan", "LOAN");
+        ZeroDecimalSafetyToken collateral = new ZeroDecimalSafetyToken("Collateral", "COLL");
+        MockRewardController controller = new MockRewardController();
+        BasePool pool = _pool(IERC20(address(loan)), IERC20(address(collateral)), IController(address(controller)), 0);
+        _approveAndFund(loan, LP, MIN_LIQUIDITY * 3, address(pool));
+        vm.prank(LP);
+        pool.addLiquidity(LP, MIN_LIQUIDITY * 2 + 1, block.timestamp, 0);
+
+        // Force the low-liquidity rate path to exercise full-precision
+        // multiplication. The resulting repayment does not fit LoanInfo's
+        // uint128 field and must use the explicit bounded error.
+        vm.store(address(pool), bytes32(uint256(13)), bytes32(type(uint256).max));
+        vm.expectRevert(bytes("Repayment amount too large."));
+        pool.loanTerms(10_000);
+    }
+
     function test_controllerRejectsZeroVoteTokenAndVetoHolder() public {
         vm.expectRevert(bytes("Invalid vote token."));
         new Controller(IERC20(address(0)), 5000, 5000, 5000, 5000, 100, 0, address(this));
@@ -523,6 +611,9 @@ contract FundSafetyTest is Test {
         new Controller(IERC20(address(0x1234)), 5000, 5000, 5000, 5000, 100, 0, address(this));
 
         SafetyToken voteToken = new SafetyToken("Vote", "VOTE");
+        MetadataSafetyToken voteToken6 = new MetadataSafetyToken(6);
+        vm.expectRevert(bytes("Vote token must use 18 decimals."));
+        new Controller(IERC20(address(voteToken6)), 5000, 5000, 5000, 5000, 100, 0, address(this));
         vm.expectRevert(bytes("Invalid veto holder."));
         new Controller(IERC20(address(voteToken)), 5000, 5000, 5000, 5000, 100, 0, address(0));
     }

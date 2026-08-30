@@ -4,6 +4,9 @@ Interface for the BasePool lending contract.
 
 **Source:** `contracts/interfaces/IBasePool.sol`
 
+The legacy `creatorFee` ABI identifier denotes protocol revenue deposited with
+the Controller; it is not paid to a pool creator or treasury account.
+
 ## Events
 
 ### NewSubPool

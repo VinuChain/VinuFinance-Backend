@@ -969,6 +969,17 @@ describe('test BasePool', function () {
                 await expect(contract.connect(alice).addLiquidity(alice.address, String(liquidity) ,150,0))
                     .to.be.revertedWith('Initial liquidity must exceed minimum.')
             })
+            it('rejects a loan index that cannot fit LP cursor timestamps', async function () {
+                await contract.setLoanIdx('4294967295')
+                await expect(contract.connect(deployer).borrow(
+                    deployer.address,
+                    '1',
+                    0,
+                    '340282366920938463463374607431768211455',
+                    150,
+                    0
+                )).to.be.revertedWith('Loan index too large.')
+            })
             it('fails to borrow with zero collateral', async function () {
                 const [alice, bob] = await newUsers([ [LOAN_CCY_TOKEN, 8000] ], [[COLL_CCY_TOKEN, 8000]])
 
@@ -1708,7 +1719,9 @@ describe('test BasePool', function () {
                 const loanAmount = 428
                 const repaymentAmount = 582
                 const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+                // Cumulative-floor accounting assigns the final residual to
+                // the second claimant so all repayment units are conserved.
+                const repaymentBob = repaymentAmount - repaymentAlice
 
                 //const shares2 = Math.floor((repaymentAmount - loanAmount) / (liquidity - loanAmount) * shares)
 
@@ -1867,7 +1880,9 @@ describe('test BasePool', function () {
                 const loanAmount = 428
                 const repaymentAmount = 582
                 const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+                // Cumulative-floor accounting assigns the final residual to
+                // the second claimant so all repayment units are conserved.
+                const repaymentBob = repaymentAmount - repaymentAlice
 
                 const shares2Alice = Math.floor(repaymentAmount / (liquidity - loanAmount) * sharesAlice)
                 const shares2Bob = Math.floor(repaymentAmount / (liquidity - loanAmount) * sharesBob)
@@ -2043,7 +2058,7 @@ describe('test BasePool', function () {
                 const loanAmount = 428
                 const repaymentAmount = 582
                 const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+                const repaymentBob = repaymentAmount - repaymentAlice
 
                 const shares2Alice = Math.floor(repaymentAmount / (liquidity - loanAmount) * sharesAlice)
                 const shares2Bob = Math.floor(repaymentAmount / (liquidity - loanAmount) * sharesBob)
@@ -2602,7 +2617,9 @@ describe('test BasePool', function () {
                 const repaymentAmount2 = 596
 
                 const repaymentAlice = Math.floor((repaymentAmount + repaymentAmount2) * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor((repaymentAmount + repaymentAmount2) * liquidityBob / liquidity)
+                // Cumulative-floor accounting assigns the final residual to
+                // the second claimant so all repayment units are conserved.
+                const repaymentBob = repaymentAmount + repaymentAmount2 - repaymentAlice
 
                 await contract.connect(alice).addLiquidity(alice.address, String(liquidityAlice) ,150,0)
 
@@ -2725,7 +2742,9 @@ describe('test BasePool', function () {
                 const repaymentAmount2 = 596
 
                 const repaymentAlice = Math.floor((repaymentAmount + repaymentAmount2) * liquidityAlice / liquidity)
-                const repaymentBob = Math.floor((repaymentAmount + repaymentAmount2) * liquidityBob / liquidity)
+                // Cumulative-floor accounting assigns the final residual to
+                // the second claimant so all repayment units are conserved.
+                const repaymentBob = repaymentAmount + repaymentAmount2 - repaymentAlice
 
                 const shares2Alice = Math.floor((repaymentAmount + repaymentAmount2) / (liquidity - loanAmount - loanAmount2) * sharesAlice)
                 const shares2Bob = Math.floor((repaymentAmount + repaymentAmount2) / (liquidity - loanAmount - loanAmount2) * sharesBob)
@@ -3052,7 +3071,7 @@ describe('test BasePool', function () {
                         [2],
                         0,
                         150
-                )).to.be.revertedWith('Loan indexes with changing shares.')
+                )).to.be.revertedWith('Invalid claim range.')
             })
 
             it('fails to claim an already claimed loan', async function () {
@@ -3097,7 +3116,7 @@ describe('test BasePool', function () {
                         [1],
                         0,
                         150
-                    )).to.be.revertedWith('Unentitled from loan indices.')
+                    )).to.be.revertedWith('Invalid claim range.')
             })
         })
 
@@ -4694,44 +4713,14 @@ describe('test BasePool', function () {
 
                     expect(await controllerContract.voteTokenTotalSupply()).to.be.deep.equal('1000')
 
-                    // Alice has 10% of the voting power
-
+                    // An EOA cannot be converted into a reward-capable pool.
                     await controllerContract.connect(alice).createProposal(charlie.address, Actions.Whitelist, 150)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
                     await controllerContract.connect(alice).vote(0)
                     await controllerContract.connect(bob).vote(0)
-
-                    // Not yet executed: the veto holder hasn't set its approval
+                    await expect(
+                        controllerContract.connect(deployer).setVetoHolderApproval(0, true)
+                    ).to.be.revertedWith('Invalid pool target.')
                     await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
-                    await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [true], controllerContract)
-
-                    // Charlie is now a whitelisted pool. Request sending some tokens to Dan
-                    const liquidity = 452
-                    const duration = 3691
-                    const rewardCoefficient = MONE.mul(135).div(100).toString() // 1.35
-                    const reward = 2252248 // Precomputed
-
-                    const tx1 = await controllerContract.connect(charlie).requestTokenDistribution(dan.address, liquidity, duration, rewardCoefficient)
-
-                    await checkQuery('rewardSupply', [], [String(10000000 - reward)], controllerContract)
-                    
-                    await checkEvents(tx1, [{
-                        account : dan.address,
-                        liquidity,
-                        duration,
-                        rewardCoefficient,
-                        amount : reward
-                    }], controllerContract)
-
-                    await checkQuery('rewardBalance', [dan.address], [reward], controllerContract)
-
-                    await controllerContract.connect(dan).collectReward(false)
-                    expect(await voteTokenContract.balanceOf(dan.address)).to.be.deep.equal(String(reward))
                 })
 
                 it('collects the reward (with depositing)', async function () {
@@ -4744,56 +4733,13 @@ describe('test BasePool', function () {
 
                     expect(await controllerContract.voteTokenTotalSupply()).to.be.deep.equal('1000')
 
-                    // Alice has 10% of the voting power
-
                     await controllerContract.connect(alice).createProposal(charlie.address, Actions.Whitelist, 150)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
                     await controllerContract.connect(alice).vote(0)
                     await controllerContract.connect(bob).vote(0)
-
-                    // Not yet executed: the veto holder hasn't set its approval
+                    await expect(
+                        controllerContract.connect(deployer).setVetoHolderApproval(0, true)
+                    ).to.be.revertedWith('Invalid pool target.')
                     await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
-                    await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [true], controllerContract)
-
-                    // Charlie is now a whitelisted pool. Request sending some tokens to Dan
-                    const liquidity = 452
-                    const duration = 3691
-                    const rewardCoefficient = MONE.mul(135).div(100).toString() // 1.35
-                    const reward = 2252248 // Precomputed
-
-                    const tx1 = await controllerContract.connect(charlie).requestTokenDistribution(dan.address, liquidity, duration, rewardCoefficient)
-
-                    await checkQuery('rewardSupply', [], [String(10000000 - reward)], controllerContract)
-                    
-                    await checkEvents(tx1, [{
-                        account : dan.address,
-                        liquidity,
-                        duration,
-                        rewardCoefficient,
-                        amount : reward
-                    }], controllerContract)
-
-                    await checkQuery('rewardBalance', [dan.address], [reward], controllerContract)
-
-                    await setTime(123, controllerContract)
-
-                    const tx2 = await controllerContract.connect(dan).collectReward(true)
-                    expect(await voteTokenContract.balanceOf(dan.address)).to.be.deep.equal(String(0))
-                    await checkQuery('voteTokenBalance', [dan.address], [reward], controllerContract)
-                    await checkQuery('lastDepositTimestamp', [dan.address], [123], controllerContract)
-
-                    await checkEvents(tx2, [{
-                        account : dan.address,
-                        amount : reward,
-                        newBalance : reward,
-                        newTotalSupply : 100 + 900 + reward,
-                        subTimestamp: 0
-                    }], controllerContract)
                 })
 
                 it('fails to collect the reward when there is none', async function () {
@@ -5145,40 +5091,14 @@ describe('test BasePool', function () {
 
                     expect(await controllerContract.voteTokenTotalSupply()).to.be.deep.equal('1000')
 
-                    // Alice has 10% of the voting power
-
+                    // An EOA cannot be converted into a reward-capable pool.
                     await controllerContract.connect(alice).createProposal(charlie.address, Actions.Whitelist, 150)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
                     await controllerContract.connect(alice).vote(0)
                     await controllerContract.connect(bob).vote(0)
-
-                    // Not yet executed: the veto holder hasn't set its approval
+                    await expect(
+                        controllerContract.connect(deployer).setVetoHolderApproval(0, true)
+                    ).to.be.revertedWith('Invalid pool target.')
                     await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
-                    await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [true], controllerContract)
-
-                    // Charlie is now a whitelisted pool. Request sending some tokens to Dan
-                    const liquidity = 452
-                    const duration = 3691
-                    const rewardCoefficient = MONE.mul(135).div(100).toString() // 1.35
-                    const reward = 2252248 // Precomputed
-
-                    const tx1 = await controllerContract.connect(charlie).requestTokenDistribution(dan.address, liquidity, duration, rewardCoefficient)
-
-                    await checkQuery('rewardSupply', [], [String(10000000 - reward)], controllerContract)
-                    
-                    await checkEvents(tx1, [{
-                        account : dan.address,
-                        liquidity,
-                        duration,
-                        rewardCoefficient,
-                        amount : reward
-                    }], controllerContract)
-                    await checkQuery('rewardBalance', [dan.address], [reward], controllerContract)
                 })
 
                 it('fails to request token distribution without being whitelisted', async function () {
@@ -5209,32 +5129,13 @@ describe('test BasePool', function () {
 
                     expect(await controllerContract.voteTokenTotalSupply()).to.be.deep.equal('1000')
 
-                    // Alice has 10% of the voting power
-
                     await controllerContract.connect(alice).createProposal(charlie.address, Actions.Whitelist, 150)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
                     await controllerContract.connect(alice).vote(0)
                     await controllerContract.connect(bob).vote(0)
-
-                    // Not yet executed: the veto holder hasn't set its approval
+                    await expect(
+                        controllerContract.connect(deployer).setVetoHolderApproval(0, true)
+                    ).to.be.revertedWith('Invalid pool target.')
                     await checkQuery('poolWhitelisted', [charlie.address], [false], controllerContract)
-
-                    await controllerContract.connect(deployer).setVetoHolderApproval(0, true)
-
-                    await checkQuery('poolWhitelisted', [charlie.address], [true], controllerContract)
-
-                    // Charlie is now a whitelisted pool. Request sending some tokens to Dan
-                    const liquidity = 452
-                    const duration = 3691
-                    const rewardCoefficient = MONE.mul(135).div(100).toString() // 1.35
-
-                    await controllerContract.connect(charlie).requestTokenDistribution(
-                        dan.address, liquidity, duration, rewardCoefficient
-                    )
-
-                    await checkQuery('rewardBalance', [dan.address], ['1000000'], controllerContract)
                 })
             })
         })
@@ -6094,7 +5995,7 @@ describe('test BasePool', function () {
     
             it('checks that Controller supports IController', async function () {
                 await expect(
-                    controllerContract.supportsInterface('0xef5f8ff3')
+                    controllerContract.supportsInterface('0x200cadb7')
                 ).to.be.eventually.equal(true)
             })
         })
@@ -6592,7 +6493,8 @@ describe('test BasePool', function () {
 
             const time3 = 985
             const sharesRemoved3 = shares2
-            const liquidity3 = MIN_LIQUIDITY
+            // Full exits have no liquidity eligible for the next reward interval.
+            const liquidity3 = 0
             const reward3 = Math.floor((time3 - time2) * liquidity2 * coefficient)
 
             await setTime(time1)
@@ -6653,7 +6555,7 @@ describe('test BasePool', function () {
             const loanBob = Math.floor(loanAmount * liquidityBob / liquidity)
             const repaymentAmount = 582
             const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-            const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+            const repaymentBob = repaymentAmount - repaymentAlice
 
             const claimTimeAlice = 353
             const claimTimeBob = 424
@@ -6766,7 +6668,7 @@ describe('test BasePool', function () {
             const loanBob = Math.floor(loanAmount * liquidityBob / liquidity)
             const repaymentAmount = 582
             const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / liquidity)
-            const repaymentBob = Math.floor(repaymentAmount * liquidityBob / liquidity)
+            const repaymentBob = repaymentAmount - repaymentAlice
 
             const claimTimeAlice = 353
             const claimTimeBob = 424
@@ -7062,7 +6964,7 @@ describe('test BasePool', function () {
             const repaymentAmount = 582
             
             const repaymentAlice = Math.floor(repaymentAmount * liquidityAlice / totalLiquidity())
-            const repaymentBob = Math.floor(repaymentAmount * liquidityBob / totalLiquidity())
+            const repaymentBob = repaymentAmount - repaymentAlice
 
             await contract.connect(charlie).borrow(charlie.address, // onBehalfOf
                     String(collateralPledge), 200, // minLoanLimit

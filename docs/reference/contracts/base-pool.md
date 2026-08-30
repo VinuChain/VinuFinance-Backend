@@ -18,7 +18,7 @@ BasePool implements VinuFinance's Zero Liquidation Lending model where:
 | `MIN_LPING_PERIOD` | 120 | Minimum seconds between add and remove liquidity |
 | `MIN_TENOR` | 86400 | Minimum loan duration (1 day) |
 | `BASE` | 10^18 | Precision for rate calculations |
-| `MAX_FEE` | 3×10^16 | Maximum creator fee (3%) |
+| `MAX_FEE` | 3×10^16 | Maximum protocol revenue fee (3%) |
 
 ## State Variables
 
@@ -34,8 +34,8 @@ BasePool implements VinuFinance's Zero Liquidation Lending model where:
 | `minLoan` | `uint256` | Minimum loan size |
 | `minLiquidity` | `uint256` | Minimum required liquidity |
 | `collTokenDecimals` | `uint256` | Collateral token decimals |
-| `creatorFee` | `uint256` | Fee percentage (in BASE) |
-| `rewardCoefficient` | `uint96` | LP reward multiplier |
+| `creatorFee` | `uint256` | Protocol revenue fee percentage (in BASE) |
+| `rewardCoefficient` | `uint96` | LP reward multiplier applied to raw loan-token liquidity; configure scaling for 6-decimal loan pools |
 
 ### Rate Parameters
 

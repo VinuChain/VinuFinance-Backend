@@ -100,7 +100,7 @@ The minimum time (120 seconds) between adding and removing liquidity. Prevents f
 The minimum loan duration (86,400 seconds = 1 day).
 
 ### MultiClaim
-A helper contract allowing LPs to claim multiple non-consecutive loans in a single transaction.
+A helper contract allowing LPs to batch one global consecutive loan prefix in a single transaction; sparse gaps are not supported.
 
 ## P
 
