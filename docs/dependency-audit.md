@@ -1,71 +1,43 @@
 # Dependency audit policy
 
-CI runs Yarn's audit twice: once for the runtime graph (`--groups
-dependencies`) and once for the complete Hardhat/Foundry toolchain. The gate in
-`scripts/audit_gate.js` always rejects critical advisories and rejects every
-high advisory except the exact upstream paths listed below. Low and moderate
-counts are printed in the gate result; raw audit JSONL is supplied to the gate
-during CI for path-level review. They are not hidden or converted into a false
-clean result.
+CI audits the runtime dependency graph and the complete Hardhat/Foundry
+toolchain separately. `scripts/audit_gate.js` rejects every critical or high
+advisory, including a summary whose advisory records are incomplete. Lower
+severities remain visible in the emitted report.
 
-The validation run for this integration reported no critical findings. Its
-point-in-time registry counts were 45 production dependencies (9 low, 1
-moderate, 1 high) and 607 full-graph dependencies (15 low, 16 moderate, 9
-high). Runtime `ethers` is promoted to `dependencies` because the reconciler
-needs its signer/provider APIs, so the runtime graph includes the Ethers 5
-WebSocket dependency. These counts must be refreshed from the CI report rather
-than assumed; registry advisories can change independently of this repository.
+The current full-graph run reports nine low-severity `elliptic` findings and no
+moderate, high, or critical findings. The registry has no patched `elliptic`
+release for those paths. Counts must be refreshed from CI because registry
+advisories can change independently of this repository.
 
-## Explicit high-severity exceptions
+## Out-of-range security resolutions
 
-These are development or operator-tool paths constrained by upstream package
-ranges. They are exceptions to the high-severity gate, not resolutions or
-claims that the full graph is clean.
+Some upstream tools pin vulnerable versions too narrowly. Yarn resolutions pin
+patched replacements, and the compile, test, coverage, deployment, compiler,
+network, and reconciliation gates provide compatibility evidence. `yarn check
+--integrity` verifies the installed lockfile; `--verify-tree` is intentionally
+unsuitable because it rejects these audited overrides before compatibility
+tests can run.
 
-| Advisory path | Why it remains | Scope assumption |
+| Advisory path | Pinned replacement | Compatibility gate |
 | --- | --- | --- |
-| `mocha>serialize-javascript` and `hardhat>mocha>serialize-javascript` | Mocha/Hardhat 2 declare the 6.x range; patched 7.x is outside that declared range. | Test-runner serialization only; no production service imports Mocha. |
-| `hardhat>solc>tmp` | Hardhat 2.29.1's bundled solc path declares `tmp` 0.0.33; the patched 0.2.x line is not a declared-compatible upgrade. | Hardhat controls compiler invocation and the compiler package is dev-only. No user-controlled temp prefix is passed by this repository. |
-| `hardhat>adm-zip` | Hardhat 2.29.1 declares `adm-zip` `^0.4.16`; patched 0.6.x is outside that range. | Hardhat's own archive handling only; no production ZIP input. |
-| `@nomicfoundation/hardhat-verify>undici` | The official Hardhat 2 verification plugin declares undici 5.x; patched 6.x is outside its range. | Verification is an explicit operator action against the fixed VinuExplorer URL, not a runtime request path. |
-| `@ethersproject/providers>ws` and `ethers>@ethersproject/providers>ws` | Ethers 5.8 pins ws 8.18.0 exactly; patched 8.21.x would violate that package declaration and fail `yarn check --verify-tree`. | Runtime source uses HTTP RPC; the Ethers WebSocket transport is retained only for the dependency's supported API surface. |
+| Mocha/Hardhat `serialize-javascript` | 7.1.1 | Hardhat tests and coverage |
+| Hardhat `solc>tmp` | 0.2.7 | compile and compiler alignment |
+| Hardhat `adm-zip` | 0.6.0 | compile and deployment rehearsal |
+| Hardhat Verify `undici` | 6.28.0 | network registration check |
+| Ethers provider `ws` | 8.21.3 | Hardhat and reconciler suites |
 
-The lockfile applies only range-compatible updates for word-wrap (1.2.5), AJV
-(8.20.0), bn.js 4.x requests (4.12.5), and bn.js 5.x requests (5.2.5). The exact
-bn.js 4.11.6 requests remain separate and are reported honestly. The current
-runtime form-data is 4.0.6 through axios (already newer than the 2.5.6 patched
-floor). Other upstream-constrained advisories remain visible with their exact
-paths in the audit JSONL output.
-
-The lower-severity residual paths in the current report are also reviewed, not
-silently suppressed:
-
-- `hardhat>@sentry/node>cookie`
-- `hardhat>solc>tmp`
-- `mocha>diff` and `hardhat>mocha>diff`
-- `mocha>serialize-javascript` and `hardhat>mocha>serialize-javascript`
-- `hardhat>uuid` and `typechain>ts-command-line-args>@morgan-stanley/ts-mocking-bird>uuid`
-- `@nomicfoundation/hardhat-verify>undici`
-- `@ethersproject/providers>ws` and `ethers>@ethersproject/providers>ws`
-- `solidity-coverage>web3-utils>ethjs-unit>bn.js`,
-  `solidity-coverage>web3-utils>number-to-bn>bn.js`, and
-  `solidity-coverage>web3-utils>ethjs-unit>number-to-bn>bn.js`
-- Ethers' nested `@ethersproject/signing-key>elliptic` paths (including the
-  provider, ABI, wallet, and Hardhat matcher paths); the registry currently
-  reports no patched elliptic release, while the lock uses the latest 6.x
-  release allowed by its declaration.
-
-These are all dev-tool paths except the Ethers provider/elliptic paths. The
-repository's runtime code uses HTTP RPC and does not expose WebSocket,
-serialize-javascript, ZIP, or arbitrary compiler-temp inputs to users. The
-operator must still review the full audit report whenever a dependency or
-registry advisory changes.
+The lockfile also pins patched `cookie`, `diff`, `uuid`, and affected `bn.js`
+paths. Runtime code uses HTTP RPC and does not expose WebSocket, ZIP, or compiler
+temporary-file inputs to users. Operators must still inspect the complete audit
+report whenever a dependency or advisory changes.
 
 For a reproducible local check:
 
 ```bash
 yarn install --frozen-lockfile
-yarn check --verify-tree
+yarn check --integrity
+node --test scripts/audit_gate.test.js
 audit_dir="$(mktemp -d)"
 set +e
 yarn audit --groups dependencies --json > "$audit_dir/production.jsonl"

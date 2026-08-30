@@ -60,8 +60,7 @@ jobs:
         run: yarn coverage && yarn coverage:gate
 
   # Dependency audit gate. Runtime dependencies are audited separately from
-  # the complete toolchain graph; the latter has a small, exact allowlist in
-  # scripts/audit_gate.js for upstream Hardhat 2 / Ethers 5 constraints.
+  # the complete toolchain graph; both reject every critical or high advisory.
   dependency-audit:
     name: dependency-audit
     runs-on: ubuntu-latest
@@ -75,8 +74,11 @@ jobs:
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Validate dependency tree
-        run: yarn check --verify-tree
+      - name: Validate installed lockfile integrity
+        run: yarn check --integrity
+
+      - name: Test dependency audit policy
+        run: node --test scripts/audit_gate.test.js
 
       - name: Validate VinuExplorer chain registration (no submission)
         run: yarn verify:network
@@ -88,7 +90,7 @@ jobs:
           set -e
           node scripts/audit_gate.js "$RUNNER_TEMP/yarn-audit-production.jsonl" production
 
-      - name: Audit full dependency graph with documented tool exceptions
+      - name: Audit full dependency graph
         run: |
           set +e
           yarn audit --json > "$RUNNER_TEMP/yarn-audit-full.jsonl"

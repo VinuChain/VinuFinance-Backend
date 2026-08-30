@@ -5,54 +5,14 @@
  *
  * Yarn 1 exits non-zero when advisories are present, so CI captures its JSONL
  * output in the runner's private temporary directory and invokes this script.
- * The gate rejects every critical advisory and every high advisory that is not
- * one of the explicitly documented, dev-tool-only/range-constrained paths.
- * Lower severities remain visible in the emitted report and are not hidden.
+ * The gate rejects every critical or high advisory. Lower severities remain
+ * visible in the emitted report and are not hidden.
  */
 
 const fs = require("fs");
 
 const inputFile = process.argv[2];
 const scope = process.argv[3] || "full";
-
-const allowedHigh = [
-  {
-    module: "serialize-javascript",
-    patched: ">=7.0.3",
-    paths: ["mocha>serialize-javascript", "hardhat>mocha>serialize-javascript"],
-    reason: "Hardhat 2 / Mocha 11 currently declare serialize-javascript ^6; no compatible patched release is published.",
-  },
-  {
-    module: "tmp",
-    patched: ">=0.2.6",
-    paths: ["hardhat>solc>tmp"],
-    reason: "Hardhat 2.29.1's solc dependency declares tmp 0.0.33; upgrading it requires an incompatible upstream range override.",
-  },
-  {
-    module: "adm-zip",
-    patched: ">=0.6.0",
-    paths: ["hardhat>adm-zip"],
-    reason: "Hardhat 2.29.1 declares adm-zip ^0.4.16; the patched 0.6 line is outside that range and is not API-equivalent by declaration.",
-  },
-  {
-    module: "undici",
-    patched: ">=6.24.0",
-    paths: ["@nomicfoundation/hardhat-verify>undici"],
-    reason: "The official Hardhat 2 verification plugin declares undici ^5.14; the patched 6.x line is outside its declared range.",
-  },
-  {
-    module: "undici",
-    patched: ">=6.27.0",
-    paths: ["@nomicfoundation/hardhat-verify>undici"],
-    reason: "The official Hardhat 2 verification plugin declares undici ^5.14; the patched 6.x line is outside its declared range.",
-  },
-  {
-    module: "ws",
-    patched: ">=8.21.0",
-    paths: ["@ethersproject/providers>ws", "ethers>@ethersproject/providers>ws"],
-    reason: "Ethers 5.8's provider package pins ws 8.18.0 exactly; no compatible patched release is available without violating its declared range.",
-  },
-];
 
 function readAuditJsonl(file) {
   let source;
@@ -80,15 +40,6 @@ function advisoryRecords(records) {
     .filter(Boolean);
 }
 
-function matchingException(advisory, findingPath) {
-  return allowedHigh.find(
-    (exception) =>
-      exception.module === advisory.module_name &&
-      exception.patched === advisory.patched_versions &&
-      exception.paths.includes(findingPath),
-  );
-}
-
 let records;
 try {
   records = readAuditJsonl(inputFile);
@@ -103,11 +54,22 @@ if (!summaryRecord) {
   process.exit(1);
 }
 
+const vulnerabilities = summaryRecord.data && summaryRecord.data.vulnerabilities;
+if (
+  !vulnerabilities ||
+  !Number.isInteger(vulnerabilities.high) ||
+  vulnerabilities.high < 0 ||
+  !Number.isInteger(vulnerabilities.critical) ||
+  vulnerabilities.critical < 0
+) {
+  console.error("[audit-gate] auditSummary has missing or invalid high/critical counts");
+  process.exit(1);
+}
+
 const advisories = advisoryRecords(records);
 const critical = advisories.filter((advisory) => advisory.severity === "critical");
 const high = advisories.filter((advisory) => advisory.severity === "high");
 const unapprovedHigh = [];
-const approvedHigh = [];
 
 for (const advisory of high) {
   const paths = (advisory.findings || []).flatMap((finding) => finding.paths || []);
@@ -116,25 +78,24 @@ for (const advisory of high) {
     continue;
   }
   for (const findingPath of paths) {
-    const exception = matchingException(advisory, findingPath);
-    if (!exception) {
-      unapprovedHigh.push({ module: advisory.module_name, patched: advisory.patched_versions, path: findingPath });
-    } else {
-      approvedHigh.push({ module: advisory.module_name, patched: advisory.patched_versions, path: findingPath, reason: exception.reason });
-    }
+    unapprovedHigh.push({ module: advisory.module_name, patched: advisory.patched_versions, path: findingPath });
   }
 }
 
 const result = {
-  pass: critical.length === 0 && unapprovedHigh.length === 0,
+  pass:
+    vulnerabilities.critical === 0 &&
+    vulnerabilities.high === 0 &&
+    critical.length === 0 &&
+    unapprovedHigh.length === 0,
   scope,
   policy: {
     critical: "zero allowed",
-    high: "only exact entries in this script's allowlist are accepted",
+    high: "zero allowed",
     lowerSeverities: "reported, not suppressed",
   },
   summary: summaryRecord.data,
-  approvedHigh,
+  approvedHigh: [],
   critical: critical.map((advisory) => ({ module: advisory.module_name, patched: advisory.patched_versions })),
   unapprovedHigh,
 };
