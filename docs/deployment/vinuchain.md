@@ -2,6 +2,13 @@
 
 This guide covers VinuFinance deployment specifics for VinuChain.
 
+> **Legacy mainnet warning:** The examples below are illustrative deployment
+> inputs, not the immutable mainnet deployment. For exact legacy addresses,
+> constructor arguments, decimals, runtime hashes, and verification status use
+> [`legacy-vinuchain.md`](legacy-vinuchain.md) and
+> [`deployments/vinuchain-legacy.json`](../../deployments/vinuchain-legacy.json).
+> Never deploy or verify a legacy pool from a copied example.
+
 ## VinuChain Network
 
 | Property | Value |

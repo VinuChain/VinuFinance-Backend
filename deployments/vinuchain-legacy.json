@@ -1,0 +1,485 @@
+{
+  "schemaVersion": 1,
+  "network": {
+    "name": "VinuChain",
+    "chainId": 207,
+    "rpcUrl": "https://rpc.vinuchain.org",
+    "explorerUrl": "https://vinuexplorer.org",
+    "explorerApiUrl": "https://mainnet.vinuexplorer.org/api/v2",
+    "nativeCurrency": "VC",
+    "observedAt": "2026-08-30T05:52:02Z",
+    "observedBlock": 14707477,
+    "observedBlockTimestamp": 1788069122,
+    "eventScanStartBlock": 100000,
+    "generation": "legacy-mainnet-v1",
+    "forkRulesAtObservation": {
+      "query": "vc_getRules latest",
+      "Shanghai": true,
+      "Cancun": true,
+      "Prague": true,
+      "VinuLatestEVM": true
+    }
+  },
+  "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+  "contracts": {
+    "controller": {
+      "name": "Controller",
+      "address": "0x17bA239f2815BA01152522521737275a2439216f",
+      "creationBlock": 164725,
+      "creationTxHash": "0x7e30c0df820b89d943a5289564aa061d4cff5502327e46a248298c1b4241f133",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 11969,
+      "runtimeKeccak": "0xb2315e088506da1a6c8ff4d166ba30510fdff26c3f7a578264e6964bd66d49e8",
+      "sourceVerification": "PARTIAL",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0x17bA239f2815BA01152522521737275a2439216f?tab=contract",
+      "constructor": {
+        "voteToken": "0xed8c5530a0A086a12f57275728128a60DFf04230",
+        "pauseThreshold": 2000,
+        "unpauseThreshold": 3000,
+        "whitelistThreshold": 6000,
+        "dewhitelistThreshold": 4000,
+        "snapshotTokenEvery": 100,
+        "lockPeriod": 10,
+        "vetoHolder": "0xe56e67774d965c10193375fd953d2e1e2f802d16"
+      }
+    },
+    "multiClaim": {
+      "name": "MultiClaim",
+      "address": "0xA260d19aEe266cC85F41f160271F9C72ea8E2837",
+      "creationBlock": 118882,
+      "creationTxHash": "0xce7b494160b227bf57ba1689c86f4a03ee082101e113b981c64dcf216f96f239",
+      "deployer": "0x5108acD095a06eaE9F52A5a2205dBCa5764fFADD",
+      "runtimeBytes": 2631,
+      "runtimeKeccak": "0x7418c30808f2c917606cd9e1a8699c4fb339685b29c4569866ac9dad7daacf50",
+      "sourceVerification": "FULL",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0xA260d19aEe266cC85F41f160271F9C72ea8E2837?tab=contract",
+      "constructor": {}
+    },
+    "emergencyWithdrawal": {
+      "name": "EmergencyWithdrawal",
+      "address": "0xeBC1C9Ae7FC761330929d682d97334513C1FcB4b",
+      "creationBlock": 142906,
+      "creationTxHash": "0xae83e086c6d9554763cb37ef81435552e6e7f894171cb255a10b9bd19b96cb32",
+      "deployer": "0x5108acD095a06eaE9F52A5a2205dBCa5764fFADD",
+      "runtimeBytes": 3128,
+      "runtimeKeccak": "0xc8079b7196f9f8caea177ac091688377616c8ad3eb2a84f476738423f5c0424a",
+      "sourceVerification": "FULL",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0xeBC1C9Ae7FC761330929d682d97334513C1FcB4b?tab=contract",
+      "constructor": {}
+    }
+  },
+  "tokens": {
+    "wvc": {
+      "name": "Wrapped VC",
+      "symbol": "WVC",
+      "address": "0xEd8c5530a0A086a12f57275728128a60DFf04230",
+      "decimals": 18,
+      "creationBlock": 115872,
+      "creationTxHash": "0x97021bac2b8874db2cf5c8f15d50a3ab2263c439f5066397c5c08d4bc694064b",
+      "deployer": "0x98A76bB08f70F43522E17Bb58B3953D95cfa58b4",
+      "runtimeBytes": 3249,
+      "runtimeKeccak": "0x73c7651467e8b189423bad0b700b351353699ad92619bec447670bfb710fe783",
+      "sourceVerification": "PARTIAL",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0xEd8c5530a0A086a12f57275728128a60DFf04230?tab=contract"
+    },
+    "usdt": {
+      "name": "USDT@VinuChain",
+      "symbol": "USDT",
+      "address": "0xC0264277fcCa5FCfabd41a8bC01c1FcAF8383E41",
+      "decimals": 6,
+      "creationBlock": 5889,
+      "creationTxHash": "0xdc85a1dc1d7d57ba31624342ea173b48b7070982ee7bdc3008633dd2f98c3e9e",
+      "deployer": "0x4Cf0A877E906DEaD748A41aE7DA8c220E4247D9e",
+      "runtimeBytes": 8822,
+      "runtimeKeccak": "0x1e46e6eb16ce4efa0d9a5e9e6f4e057d79282f5ac1cbd445a1146b7a849caffe",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0xC0264277fcCa5FCfabd41a8bC01c1FcAF8383E41?tab=contract"
+    },
+    "vinu": {
+      "name": "Vita Inu",
+      "symbol": "VINU",
+      "address": "0x00c1E515EA9579856304198EFb15f525A0bb50f6",
+      "decimals": 18,
+      "creationBlock": 5983,
+      "creationTxHash": "0x6d38434d5df5eefaa39aa6826a6078f43f79cea8f07e331c16184223022b2e4f",
+      "deployer": "0x1F2aC2470A9e11F772Aa69334eFe218E7E74E394",
+      "runtimeBytes": 2570,
+      "runtimeKeccak": "0xa6403bce53bd1535cb9ed52014b0ce547bb262fd1c739a03c8949de586f6643c",
+      "sourceVerification": "PARTIAL",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0x00c1E515EA9579856304198EFb15f525A0bb50f6?tab=contract"
+    }
+  },
+  "pools": [
+    {
+      "id": "wvc-usdt-legacy-1",
+      "address": "0xfeec5A79D8f6d0CcC9f55Ed96cf985501CC4Db37",
+      "creationBlock": 164729,
+      "creationTxHash": "0x4eec3917b27fd9f49da45e6b13c16bc039e3e646850509f127a5d609166e36a9",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0xfeec5A79D8f6d0CcC9f55Ed96cf985501CC4Db37?tab=contract",
+      "loanToken": "wvc",
+      "collateralToken": "usdt",
+      "declaredCollateralDecimals": 18,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "10743776284000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "1570982817519027147326",
+        "loanTokenBalance": "1570982817519027147326",
+        "totalLpShares": "1569998",
+        "nextLoanIdx": "1"
+      }
+    },
+    {
+      "id": "vinu-usdt-legacy-1",
+      "address": "0x2Eb1970dc38AfF84735cf965126ec5044197285C",
+      "creationBlock": 164733,
+      "creationTxHash": "0xf9470a0f66e7ea316aee27b1a7f8f76afc7dd5123330a8f6b552aa09f7dbc7e1",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0x2Eb1970dc38AfF84735cf965126ec5044197285C?tab=contract",
+      "loanToken": "vinu",
+      "collateralToken": "usdt",
+      "declaredCollateralDecimals": 18,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "46983018994563400000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "1000000996999555028747522",
+        "loanTokenBalance": "1000000996999555028747522",
+        "totalLpShares": "999999997",
+        "nextLoanIdx": "1"
+      }
+    },
+    {
+      "id": "vinu-wvc-legacy-1",
+      "address": "0x68EA6F302e1bFDEbCC6336e7309463c97c100a05",
+      "creationBlock": 164737,
+      "creationTxHash": "0x541bde5879093d520e140f752d8fe34b3b6011a3cd5eab5bdf99afada2b8c645",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0x68EA6F302e1bFDEbCC6336e7309463c97c100a05?tab=contract",
+      "loanToken": "vinu",
+      "collateralToken": "wvc",
+      "declaredCollateralDecimals": 18,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "1749218068326733000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "1100000998359758771072504",
+        "loanTokenBalance": "1100000998359758771072504",
+        "totalLpShares": "1100568576",
+        "nextLoanIdx": "2"
+      }
+    },
+    {
+      "id": "wvc-vinu-legacy-1",
+      "address": "0xB8F54383b78FAb60D2eCedc59B5cde9a6ae655d1",
+      "creationBlock": 164743,
+      "creationTxHash": "0xa0dc21098b461506148d202b94d0693c009112825991008ca5e918839068627f",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0xB8F54383b78FAb60D2eCedc59B5cde9a6ae655d1?tab=contract",
+      "loanToken": "wvc",
+      "collateralToken": "vinu",
+      "declaredCollateralDecimals": 18,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "91000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "1000000000000000000",
+        "loanTokenBalance": "69500626795437056113178",
+        "totalLpShares": "0",
+        "nextLoanIdx": "2"
+      }
+    },
+    {
+      "id": "wvc-usdt-legacy-2",
+      "address": "0xF0e98da5EF7CA6aD88E42cD3fc47546B10618F1b",
+      "creationBlock": 205164,
+      "creationTxHash": "0xbe7b2feaaf1d427ca1be096f280c8e5b8ec41be92fb613b2bf2ff13c633eacb4",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0xF0e98da5EF7CA6aD88E42cD3fc47546B10618F1b?tab=contract",
+      "loanToken": "wvc",
+      "collateralToken": "usdt",
+      "declaredCollateralDecimals": 6,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "12968726842000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "1000000000000000000",
+        "loanTokenBalance": "1000000000000000000",
+        "totalLpShares": "0",
+        "nextLoanIdx": "1"
+      }
+    },
+    {
+      "id": "vinu-usdt-legacy-2",
+      "address": "0x81FF52B811F13548782B4dfBff604045F4786dfb",
+      "creationBlock": 205169,
+      "creationTxHash": "0xa1af8967243efcd2697943b7b042a3961231795c2a161b1d1c031d319bd4c474",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0x81FF52B811F13548782B4dfBff604045F4786dfb?tab=contract",
+      "loanToken": "vinu",
+      "collateralToken": "usdt",
+      "declaredCollateralDecimals": 6,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "54402735680422792000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "1000000000000000000",
+        "loanTokenBalance": "1000000000000000000",
+        "totalLpShares": "0",
+        "nextLoanIdx": "1"
+      }
+    },
+    {
+      "id": "wvc-usdt-legacy-3",
+      "address": "0x02C9888b942FC237f413d759663F4415FC8A80FB",
+      "creationBlock": 518267,
+      "creationTxHash": "0x5002ebe143c479eab1e5c64365221d8a14e67670c9c64f4fb66174a76a243245",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0x02C9888b942FC237f413d759663F4415FC8A80FB?tab=contract",
+      "loanToken": "wvc",
+      "collateralToken": "usdt",
+      "declaredCollateralDecimals": 6,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "13645224172000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "0",
+        "loanTokenBalance": "0",
+        "totalLpShares": "0",
+        "nextLoanIdx": "1"
+      }
+    },
+    {
+      "id": "vinu-usdt-legacy-3",
+      "address": "0x2111Bcd337dcbF62F02A93b758030673f0458fe9",
+      "creationBlock": 518272,
+      "creationTxHash": "0xaef650f0951840e0e2924321dba4a1503aed19c96a51fb64ca081f241c2ccb27",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0x2111Bcd337dcbF62F02A93b758030673f0458fe9?tab=contract",
+      "loanToken": "vinu",
+      "collateralToken": "usdt",
+      "declaredCollateralDecimals": 6,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "27127577119826384000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "0",
+        "loanTokenBalance": "0",
+        "totalLpShares": "0",
+        "nextLoanIdx": "1"
+      }
+    },
+    {
+      "id": "vinu-wvc-legacy-2",
+      "address": "0xfE3BcC21F7a48F23C149a0730DA275f42dc8b1e0",
+      "creationBlock": 518277,
+      "creationTxHash": "0xc5daa02477dc8d45c817952d0c9754478f004795f563d0217614fc04519eac58",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0xfE3BcC21F7a48F23C149a0730DA275f42dc8b1e0?tab=contract",
+      "loanToken": "vinu",
+      "collateralToken": "wvc",
+      "declaredCollateralDecimals": 18,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "795225546426911000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "0",
+        "loanTokenBalance": "0",
+        "totalLpShares": "0",
+        "nextLoanIdx": "1"
+      }
+    },
+    {
+      "id": "wvc-vinu-legacy-2",
+      "address": "0x0e603483590134f31a67A9D43e7d04193E80e482",
+      "creationBlock": 518283,
+      "creationTxHash": "0x0c6b44a14ce5af8deff30ce74410112f4ea5ab7f17bc1f5b05785334689480c1",
+      "deployer": "0xE56E67774d965c10193375Fd953d2E1e2f802d16",
+      "runtimeBytes": 13392,
+      "runtimeKeccak": "0xac6c82a183c645c37dab4657258d3393bbff898c11d806ce13b1ff29089c7601",
+      "sourceVerification": "NONE",
+      "verificationUrl": "https://mainnet.vinuexplorer.org/address/0x0e603483590134f31a67A9D43e7d04193E80e482?tab=contract",
+      "loanToken": "wvc",
+      "collateralToken": "vinu",
+      "declaredCollateralDecimals": 18,
+      "config": {
+        "loanTenor": 2592000,
+        "maxLoanPerColl": "201000000000",
+        "r1": "50000000000000000",
+        "r2": "20000000000000000",
+        "liquidityBnd1": "10000000000000000000",
+        "liquidityBnd2": "100000000000000000000",
+        "minLoan": "200000000000000000",
+        "creatorFee": "15000000000000000",
+        "minLiquidity": "1000000000000000000",
+        "rewardCoefficient": "0"
+      },
+      "stateAtObservation": {
+        "totalLiquidity": "0",
+        "loanTokenBalance": "0",
+        "totalLpShares": "0",
+        "nextLoanIdx": "1"
+      }
+    }
+  ],
+  "observedLoans": [
+    {
+      "pool": "0x68EA6F302e1bFDEbCC6336e7309463c97c100a05",
+      "loanIdx": 1,
+      "borrower": "0x257d7f13447f3Ad63f9A1CbD5DEF39574E82cdFD",
+      "collateral": "29550000000000000000",
+      "loanAmount": "51662690054721331926574503",
+      "repayment": "52695943855815758565105993",
+      "expiry": 1709914682,
+      "repaid": false,
+      "borrowTxHash": "0x28a693f62a7fe5db17f9cee443e526f1157ccc76ce0402b9f70bb3a7cbf1e936",
+      "borrowBlock": 177847,
+      "settlementNote": "Expired and unrepaid at the observation block; legacy claim simulation returns Panic(0x11)."
+    },
+    {
+      "pool": "0xB8F54383b78FAb60D2eCedc59B5cde9a6ae655d1",
+      "loanIdx": 1,
+      "repayment": "69499626795437056113178",
+      "expiry": 1715889529,
+      "repaid": true,
+      "borrowTxHash": "0xaea27c9036812a57b999b1cb547c31c2070720ce12514610f34f06b8acc8d7cf",
+      "borrowBlock": 475227,
+      "repayTxHash": "0x059120a1ecc7337f4d4dd1e4dd9ad530ec2c711b43dfb15019a7dbf0b0c007e0",
+      "repayBlock": 704952
+    }
+  ],
+  "revenueAtObservation": {
+    "currentRevenue": {
+      "wvc": "0",
+      "usdt": "0",
+      "vinu": "0"
+    },
+    "controllerBalances": {
+      "wvc": "1450000000000000000",
+      "usdt": "0",
+      "vinu": "12236122519710000000000000000"
+    },
+    "tokenSnapshots": {
+      "wvc": [{ "collectedRevenue": "450000000000000000", "claimedRevenue": "0" }],
+      "vinu": [{ "collectedRevenue": "12236122519710000000000000000", "claimedRevenue": "0" }]
+    },
+    "tokenClaimedEvents": 0,
+    "rewardEvents": 32,
+    "rewardEventsWithNonZeroCoefficient": 0
+  },
+  "knownRisks": [
+    "USDT has 6 decimals; the first two legacy USDT pools declare collTokenDecimals=18 while the later four declare 6. The reconciler flags the two mismatches; never treat USDT amounts as 18-decimal collateral.",
+    "The legacy BasePool runtime is not the audited sat-subtract generation; a historical claim against pool 0x68EA6F302e1bFDEbCC6336e7309463c97c100a05 loan 1 returns Panic(0x11).",
+    "Controller and token contracts are only partially verified and all ten BasePool instances are unverified; source/artifact/constructor equivalence is not established.",
+    "No production API/monitoring service is represented by this contracts repository; frontend service wiring remains an external release dependency."
+  ]
+}
