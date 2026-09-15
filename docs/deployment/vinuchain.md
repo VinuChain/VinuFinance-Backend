@@ -24,7 +24,7 @@ This guide covers VinuFinance deployment specifics for VinuChain.
 | Property | Value |
 |----------|-------|
 | Chain ID | 206 |
-| RPC URL | https://vinufoundation-rpc.com |
+| RPC URL | https://testnet-rpc.vinuchain.org |
 | Explorer | https://testnet.vinuexplorer.org |
 
 Hardhat registers this network as `vinuchainTestnet` and reads an optional
@@ -49,7 +49,7 @@ module.exports = {
             gasPrice: "auto"
         },
         vinuchainTestnet: {
-            url: process.env.VINUCHAIN_TESTNET_RPC_URL || "https://vinufoundation-rpc.com",
+            url: process.env.VINUCHAIN_TESTNET_RPC_URL || "https://testnet-rpc.vinuchain.org",
             chainId: 206,
             accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
         }
