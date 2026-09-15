@@ -53,7 +53,7 @@ Create a `.env` file in the project root:
 ```bash
 # Network RPC URLs
 VINUCHAIN_RPC_URL=https://rpc.vinuchain.org
-VINUCHAIN_TESTNET_RPC_URL=https://vinufoundation-rpc.com
+VINUCHAIN_TESTNET_RPC_URL=https://testnet-rpc.vinuchain.org
 
 # Private key for deployment (without 0x prefix)
 PRIVATE_KEY=your_private_key_here
@@ -63,7 +63,7 @@ PRIVATE_KEY=your_private_key_here
 
 The `vinuchain` Hardhat network is VinuChain mainnet (chain ID `207`). The
 `vinuchainTestnet` network is the VinuChain testnet (chain ID `206`) and uses
-`https://vinufoundation-rpc.com` by default. Its explorer is
+`https://testnet-rpc.vinuchain.org` by default. Its explorer is
 `https://testnet.vinuexplorer.org`. Both networks omit deploy accounts unless
 `PRIVATE_KEY` is set. `scripts/deploy.prod.ts` is deliberately mainnet-only;
 use the local deployment rehearsal for a no-chain-mutation release check:

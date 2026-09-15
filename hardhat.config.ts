@@ -45,7 +45,7 @@ export default{
             accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
         },
         vinuchainTestnet: {
-            url: process.env.VINUCHAIN_TESTNET_RPC_URL || 'https://vinufoundation-rpc.com',
+            url: process.env.VINUCHAIN_TESTNET_RPC_URL || 'https://testnet-rpc.vinuchain.org',
             chainId: 206,
             accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
         }
