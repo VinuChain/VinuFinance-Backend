@@ -23,7 +23,7 @@ tests can run.
 | --- | --- | --- |
 | Mocha/Hardhat `serialize-javascript` | 7.1.1 | Hardhat tests and coverage |
 | Hardhat `solc>tmp` | 0.2.7 | compile and compiler alignment |
-| Hardhat `adm-zip` | 0.6.0 | compile and deployment rehearsal |
+| Hardhat `adm-zip` | 0.6.1 | compile and deployment rehearsal |
 | Hardhat Verify `undici` | 6.28.0 | network registration check |
 | Ethers provider `ws` | 8.21.3 | Hardhat and reconciler suites |
 
