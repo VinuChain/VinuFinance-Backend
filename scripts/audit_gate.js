@@ -5,11 +5,36 @@
  *
  * Yarn 1 exits non-zero when advisories are present, so CI captures its JSONL
  * output in the runner's private temporary directory and invokes this script.
- * The gate rejects every critical or high advisory. Lower severities remain
+ * The gate rejects every critical or high advisory except the narrow approvals below. Lower severities remain
  * visible in the emitted report and are not hidden.
  */
 
 const fs = require("fs");
+
+// Narrow, documented exceptions (see docs/dependency-audit.md). An entry only
+// applies while the registry still reports no patched release, in the full
+// toolchain scope, and for dependency paths under the named parent. Anything
+// else, including a newly patched braces, fails the gate again.
+const APPROVED_HIGH = [
+  {
+    advisory: "GHSA-vfj7-8cjw-p6xm",
+    module: "braces",
+    scope: "full",
+    pathPrefix: "solidity-coverage>",
+    reason: "stack-exhaustion DoS in dev-only coverage tooling over trusted globs; no patched braces release exists",
+  },
+];
+
+function approvalFor(advisory, findingPath) {
+  return APPROVED_HIGH.find(
+    (entry) =>
+      entry.scope === scope &&
+      entry.advisory === advisory.github_advisory_id &&
+      entry.module === advisory.module_name &&
+      advisory.patched_versions === "<0.0.0" &&
+      findingPath.startsWith(entry.pathPrefix)
+  );
+}
 
 const inputFile = process.argv[2];
 const scope = process.argv[3] || "full";
@@ -70,6 +95,7 @@ const advisories = advisoryRecords(records);
 const critical = advisories.filter((advisory) => advisory.severity === "critical");
 const high = advisories.filter((advisory) => advisory.severity === "high");
 const unapprovedHigh = [];
+const approvedHigh = [];
 
 for (const advisory of high) {
   const paths = (advisory.findings || []).flatMap((finding) => finding.paths || []);
@@ -78,6 +104,11 @@ for (const advisory of high) {
     continue;
   }
   for (const findingPath of paths) {
+    const approval = approvalFor(advisory, findingPath);
+    if (approval) {
+      approvedHigh.push({ module: advisory.module_name, path: findingPath, reason: approval.reason });
+      continue;
+    }
     unapprovedHigh.push({ module: advisory.module_name, patched: advisory.patched_versions, path: findingPath });
   }
 }
@@ -85,17 +116,17 @@ for (const advisory of high) {
 const result = {
   pass:
     vulnerabilities.critical === 0 &&
-    vulnerabilities.high === 0 &&
+    vulnerabilities.high === high.length &&
     critical.length === 0 &&
     unapprovedHigh.length === 0,
   scope,
   policy: {
     critical: "zero allowed",
-    high: "zero allowed",
+    high: "zero allowed except approved unpatched dev-tool paths",
     lowerSeverities: "reported, not suppressed",
   },
   summary: summaryRecord.data,
-  approvedHigh: [],
+  approvedHigh,
   critical: critical.map((advisory) => ({ module: advisory.module_name, patched: advisory.patched_versions })),
   unapprovedHigh,
 };

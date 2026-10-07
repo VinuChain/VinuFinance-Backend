@@ -10,6 +10,19 @@ moderate, high, or critical findings. The registry has no patched `elliptic`
 release for those paths. Counts must be refreshed from CI because registry
 advisories can change independently of this repository.
 
+## Approved high-severity exception
+
+`braces` 3.0.3 (GHSA-vfj7-8cjw-p6xm, stack-exhaustion denial of service on deeply
+nested patterns) is reached only through `solidity-coverage` (mocha/chokidar and
+globby/fast-glob/micromatch). The registry has no patched release and
+`solidity-coverage` 0.8.17 is the latest, so nothing can be bumped. The path is
+dev-only coverage tooling that expands trusted globs, never user input, and is
+absent from the production graph. `scripts/audit_gate.js` approves it only in
+the full scope, only for paths under `solidity-coverage>`, and only while the
+advisory still reports no patched version; a patched release or any other path
+fails the gate again. Remove the entry once `solidity-coverage` ships a fixed
+`braces`.
+
 ## Out-of-range security resolutions
 
 Some upstream tools pin vulnerable versions too narrowly. Yarn resolutions pin
