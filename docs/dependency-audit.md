@@ -5,10 +5,22 @@ toolchain separately. `scripts/audit_gate.js` rejects every critical or high
 advisory, including a summary whose advisory records are incomplete. Lower
 severities remain visible in the emitted report.
 
-The current full-graph run reports nine low-severity `elliptic` findings and no
-moderate, high, or critical findings. The registry has no patched `elliptic`
-release for those paths. Counts must be refreshed from CI because registry
+The full-graph run reports nine low-severity `elliptic` findings (production
+and dev), plus dev-only findings in `braces` (high, approved below) and
+`sprintf-js` (moderate). The registry has no patched `elliptic`, `braces`, or
+`sprintf-js` release (`sprintf-js` 1.1.3 is latest and still in range), so
+nothing can be bumped. Counts must be refreshed from CI because registry
 advisories can change independently of this repository.
+
+`elliptic` is reached through `ethers>@ethersproject/signing-key`; the advisory
+concerns a risky primitive implementation in signing, and the repository's
+runtime only reads chain state over HTTP RPC and signs through the operator's
+own wallet, never with attacker-supplied inputs. `sprintf-js` is reached only
+through `solidity-coverage>sc-istanbul>js-yaml>argparse`; the
+unbounded-precision-specifier DoS needs attacker-controlled format strings, and
+coverage tooling formats only its own fixed strings. It is absent from the
+production graph and is reported, not suppressed, because the gate rejects only
+high and critical findings.
 
 ## Approved high-severity exception
 
@@ -40,7 +52,7 @@ tests can run.
 | Hardhat Verify `undici` | 6.28.1 | network registration check |
 | Ethers provider `ws` | 8.21.3 | Hardhat and reconciler suites |
 
-The lockfile also pins patched `cookie`, `diff`, `uuid`, and affected `bn.js`
+The lockfile also pins patched `cookie`, `diff`, `uuid`, `pbkdf2` (3.1.7), and affected `bn.js`
 paths. Runtime code uses HTTP RPC and does not expose WebSocket, ZIP, or compiler
 temporary-file inputs to users. Operators must still inspect the complete audit
 report whenever a dependency or advisory changes.
