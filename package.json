@@ -48,7 +48,7 @@
   "resolutions": {
     "@ethersproject/abi": "5.8.0",
     "**/follow-redirects": "1.16.0",
-    "**/handlebars": "4.7.9",
+    "**/handlebars": "4.7.10",
     "**/immutable": "4.3.9",
     "**/lodash": "4.18.1",
     "**/base-x": "3.0.11",
